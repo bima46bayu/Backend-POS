@@ -1,0 +1,321 @@
+{
+  "info": {
+    "name": "POS API (Sanctum) — Admin & Kasir",
+    "_postman_id": "9d8f51c7-47f2-4e8f-9e0f-abcdef123456",
+    "description": "Collection lengkap untuk cek akses Admin & Kasir: Auth, Categories, Products, Stock Logs, Sales (Transaksi), Upload Gambar, Search & Filter.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://127.0.0.1:8000" },
+    { "key": "auth_token", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register (Admin)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Accept", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/register", "host": ["{{base_url}}"], "path": ["api","register"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Admin\",\n  \"email\": \"admin@example.com\",\n  \"password\": \"password\",\n  \"password_confirmation\": \"password\",\n  \"role\": \"admin\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Register (Kasir)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Accept", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/register", "host": ["{{base_url}}"], "path": ["api","register"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Kasir A\",\n  \"email\": \"kasir@example.com\",\n  \"password\": \"password\",\n  \"password_confirmation\": \"password\",\n  \"role\": \"kasir\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Login (set {{auth_token}} otomatis)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "try {",
+                  "  let data = pm.response.json();",
+                  "  if (data.token) {",
+                  "    pm.collectionVariables.set('auth_token', data.token);",
+                  "    pm.test('Stored auth token', function(){ pm.expect(pm.collectionVariables.get('auth_token')).to.be.ok; });",
+                  "  }",
+                  "} catch(e) { /* ignore */ }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Accept", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/login", "host": ["{{base_url}}"], "path": ["api","login"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"password\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/logout", "host": ["{{base_url}}"], "path": ["api","logout"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Kasir — Allowed (GET & Transaksi)",
+      "item": [
+        {
+          "name": "GET Categories (list)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/categories", "host": ["{{base_url}}"], "path": ["api","categories"] }
+          }
+        },
+        {
+          "name": "GET Category (detail)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/categories/1", "host": ["{{base_url}}"], "path": ["api","categories","1"] }
+          }
+        },
+        {
+          "name": "GET Products (list + search & filter)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/products?search=kaos&category_id=1",
+              "host": ["{{base_url}}"],
+              "path": ["api","products"],
+              "query": [
+                { "key": "search", "value": "kaos" },
+                { "key": "category_id", "value": "1" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET Product (detail)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/products/1", "host": ["{{base_url}}"], "path": ["api","products","1"] }
+          }
+        },
+        {
+          "name": "GET Stock Logs (riwayat)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/stock-logs?product_id=1",
+              "host": ["{{base_url}}"],
+              "path": ["api","stock-logs"],
+              "query": [{ "key": "product_id", "value": "1" }]
+            }
+          }
+        },
+        {
+          "name": "GET Sales (list)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/sales", "host": ["{{base_url}}"], "path": ["api","sales"] }
+          }
+        },
+        {
+          "name": "GET Sale (detail)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/sales/1", "host": ["{{base_url}}"], "path": ["api","sales","1"] }
+          }
+        },
+        {
+          "name": "POST Sale (buat transaksi)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{auth_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": { "raw": "{{base_url}}/api/sales", "host": ["{{base_url}}"], "path": ["api","sales"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customer_name\": \"Budi\",\n  \"items\": [\n    {\"product_id\": 1, \"qty\": 2},\n    {\"product_id\": 3, \"qty\": 1}\n  ],\n  \"discount\": 0,\n  \"tax\": 0,\n  \"payments\": [\n    {\"method\": \"cash\", \"amount\": 100000}\n  ]\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin — Allowed (Semua Mutasi)",
+      "item": [
+        {
+          "name": "POST Category (create)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/categories", "host": ["{{base_url}}"], "path": ["api","categories"] },
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Kaos\"\n}" }
+          }
+        },
+        {
+          "name": "PUT Category (update)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/categories/1", "host": ["{{base_url}}"], "path": ["api","categories","1"] },
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Kaos Premium\"\n}" }
+          }
+        },
+        {
+          "name": "DELETE Category",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/categories/1", "host": ["{{base_url}}"], "path": ["api","categories","1"] }
+          }
+        },
+        {
+          "name": "POST Product (create)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{auth_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": { "raw": "{{base_url}}/api/products", "host": ["{{base_url}}"], "path": ["api","products"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Kaos Logo\",\n  \"description\": \"Kaos dengan logo official\",\n  \"price\": 120000,\n  \"category_id\": 1,\n  \"stock\": 10\n}"
+            }
+          }
+        },
+        {
+          "name": "POST Product Upload Image",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/products/1/upload", "host": ["{{base_url}}"], "path": ["api","products","1","upload"] },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "image", "type": "file", "src": "" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "PUT Product (update)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{auth_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": { "raw": "{{base_url}}/api/products/1", "host": ["{{base_url}}"], "path": ["api","products","1"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Kaos Logo Edisi 2\",\n  \"description\": \"Bahan katun premium\",\n  \"price\": 135000,\n  \"category_id\": 1,\n  \"stock\": 25\n}"
+            }
+          }
+        },
+        {
+          "name": "DELETE Product",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/products/1", "host": ["{{base_url}}"], "path": ["api","products","1"] }
+          }
+        },
+        {
+          "name": "POST Stock Change (in/out/adjustment)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{auth_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": { "raw": "{{base_url}}/api/products/1/stock/change", "host": ["{{base_url}}"], "path": ["api","products","1","stock","change"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"change_type\": \"in\",\n  \"quantity\": 5,\n  \"note\": \"Restock awal\"\n}"
+            }
+          }
+        },
+        {
+          "name": "POST Sale Void (kembalikan stok)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/sales/1/void", "host": ["{{base_url}}"], "path": ["api","sales","1","void"] }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -8,12 +8,18 @@ use Symfony\Component\HttpFoundation\Response;
 
 class RoleMiddleware
 {
-     public function handle(Request $request, Closure $next, ...$roles): Response
+    public function handle(Request $request, Closure $next, string $rolesCsv)
     {
         $user = $request->user();
-        if (!$user || !in_array($user->role, $roles, true)) {
-            return response()->json(['message' => 'Forbidden'], 403);
+        if (! $user) {
+            abort(401, 'Unauthenticated');
         }
+
+        $allowed = array_map('trim', explode(',', $rolesCsv)); // contoh: "admin,kasir"
+        if (! in_array($user->role, $allowed, true)) {
+            abort(403, 'Forbidden');
+        }
+
         return $next($request);
     }
 }
