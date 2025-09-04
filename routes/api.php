@@ -36,6 +36,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('sales/{sale}', [SaleController::class, 'show']);
     Route::post('sales', [SaleController::class, 'store']);
 
+    // Search products (Scanner)
+    // taruh statis dulu
+    Route::get('products/search', [ProductController::class, 'search']);
+    // baru yang dinamis
+    Route::get('products/{product}', [ProductController::class, 'show'])->whereNumber('product');
+
+
     // =========================
     //  ADMIN ONLY (semua mutasi data)
     // =========================
