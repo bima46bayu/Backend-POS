@@ -22,6 +22,8 @@ return new class extends Migration
             $table->integer('stock')->default(0);
             $table->string('image_url')->nullable();
             $table->timestamps();
+
+            $table->index(['category_id', 'sub_category_id']);
         });
     }
 

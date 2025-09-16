@@ -7,91 +7,125 @@ use App\Http\Controllers\ProductController;
 use App\Http\Controllers\StockController;
 use App\Http\Controllers\StockLogController;
 use App\Http\Controllers\SaleController;
-
-// NEW
 use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\SubCategoryController;
 use App\Http\Controllers\PurchaseController;
+use App\Http\Controllers\PurchaseReceiveController;
+use App\Http\Controllers\GoodsReceiptController;
 
-// ------- Auth (public) -------
+/*
+|--------------------------------------------------------------------------
+| PUBLIC (tanpa login)
+|--------------------------------------------------------------------------
+*/
 Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login',    [AuthController::class, 'login']);
 
-// ------- Auth required -------
+/*
+|--------------------------------------------------------------------------
+| AUTHENTICATED (semua user login)
+|--------------------------------------------------------------------------
+*/
 Route::middleware('auth:sanctum')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
 
-    // =========================
-    //  KASIR & ADMIN (read-only + transaksi)
-    // =========================
+    // ---------- READ-ONLY umum ----------
+    Route::prefix('categories')->group(function () {
+        Route::get('/',                 [CategoryController::class, 'index']);
+        Route::get('/{category}',       [CategoryController::class, 'show'])->whereNumber('category');
+    });
 
-    // Categories (read-only)
-    Route::get('categories',              [CategoryController::class, 'index']);
-    Route::get('categories/{category}',   [CategoryController::class, 'show'])->whereNumber('category');
+    Route::prefix('sub-categories')->group(function () {
+        Route::get('/',                 [SubCategoryController::class, 'index']);
+        Route::get('/{subCategory}',    [SubCategoryController::class, 'show'])->whereNumber('subCategory');
+    });
 
-    // Products (read-only + search & scanner)
-    Route::get('products',                [ProductController::class, 'index']); // ?search=...&sku=...&category_id=...
-    Route::get('products/search',         [ProductController::class, 'search']); // scanner by SKU (statis duluan!)
-    Route::get('products/{product}',      [ProductController::class, 'show'])->whereNumber('product'); // dinamis setelah /search
+    Route::prefix('products')->group(function () {
+        Route::get('/',                 [ProductController::class, 'index']); // ?search=&sku=&category_id=
+        Route::get('/search',           [ProductController::class, 'search']); // scan by SKU
+        Route::get('/{product}',        [ProductController::class, 'show'])->whereNumber('product');
+    });
 
-    // Stock Logs (riwayat)
-    Route::get('stock-logs',              [StockLogController::class, 'index']);
-    Route::get('stock-logs/{stock_log}',  [StockLogController::class, 'show'])->whereNumber('stock_log');
+    Route::prefix('suppliers')->group(function () {
+        Route::get('/',                 [SupplierController::class, 'index']);
+        Route::get('/{supplier}',       [SupplierController::class, 'show'])->whereNumber('supplier');
+    });
 
-    // Sales (transaksi POS)
-    Route::get('sales',                   [SaleController::class, 'index']);
-    Route::get('sales/{sale}',            [SaleController::class, 'show'])->whereNumber('sale');
-    Route::post('sales',                  [SaleController::class, 'store']);
+    Route::prefix('stock-logs')->group(function () {
+        Route::get('/',                 [StockLogController::class, 'index']);
+        Route::get('/{stock_log}',      [StockLogController::class, 'show'])->whereNumber('stock_log');
+    });
 
-    // ===== NEW: Supplier (read untuk kasir/admin) =====
-    Route::get('suppliers',               [SupplierController::class, 'index']);
-    Route::get('suppliers/{supplier}',    [SupplierController::class, 'show'])->whereNumber('supplier');
+    Route::prefix('sales')->group(function () {
+        Route::get('/',                 [SaleController::class, 'index']);
+        Route::get('/{sale}',           [SaleController::class, 'show'])->whereNumber('sale');
+        Route::post('/',                [SaleController::class, 'store']); // transaksi POS
+    });
 
-    // ===== NEW: SubCategory (read untuk kasir/admin) =====
-    Route::get('sub-categories',                [SubCategoryController::class, 'index']);
-    Route::get('sub-categories/{subCategory}',  [SubCategoryController::class, 'show'])->whereNumber('subCategory');
+    // ---------- STAFF (admin + kasir) ----------
+    Route::middleware('role:admin,kasir')->group(function () {
+        // Purchase (buat draft, lihat, preload GR)
+        Route::prefix('purchases')->group(function () {
+            Route::get('/',                     [PurchaseController::class, 'index']); // ?status=&supplier_id=&from=&to=
+            Route::get('/{purchase}',           [PurchaseController::class, 'show'])->whereNumber('purchase');
+            Route::post('/',                    [PurchaseController::class, 'store']); // create PO (draft)
 
-    // ===== NEW: Purchase (draft/approval flow) =====
-    Route::get('purchases',               [PurchaseController::class, 'index']); // ?status=pending|approved|rejected
-    Route::get('purchases/{purchase}',    [PurchaseController::class, 'show'])->whereNumber('purchase');
-    // Buat draft (pending) — kasir & admin
-    Route::post('purchases',              [PurchaseController::class, 'store'])->middleware('role:admin,kasir');
-    // Approve/Reject (GR) — admin only
-    Route::post('purchases/{purchase}/approve', [PurchaseController::class, 'approve'])->middleware('role:admin')->whereNumber('purchase');
-    Route::post('purchases/{purchase}/reject',  [PurchaseController::class, 'reject'])->middleware('role:admin')->whereNumber('purchase');
+            // GR inline (form Receive)
+            Route::get('/{purchase}/for-receipt', [PurchaseReceiveController::class, 'forReceipt'])
+                ->whereNumber('purchase');
+        });
 
-    // =========================
-    //  ADMIN ONLY (mutasi data)
-    // =========================
+        // (opsional) GR list/detail
+        Route::prefix('receipts')->group(function () {
+            Route::get('/',                   [GoodsReceiptController::class, 'index']);
+            Route::get('/{goodsReceipt}',     [GoodsReceiptController::class, 'show'])->whereNumber('goodsReceipt');
+        });
+    });
+
+    // ---------- ADMIN ONLY ----------
     Route::middleware('role:admin')->group(function () {
-        // Categories CRUD
-        Route::post('categories',                  [CategoryController::class, 'store']);
-        Route::put('categories/{category}',        [CategoryController::class, 'update'])->whereNumber('category');
-        Route::patch('categories/{category}',      [CategoryController::class, 'update'])->whereNumber('category');
-        Route::delete('categories/{category}',     [CategoryController::class, 'destroy'])->whereNumber('category');
+        // Purchase: approve/cancel & post receive (ubah stok)
+        Route::prefix('purchases')->group(function () {
+            Route::post('/{purchase}/approve', [PurchaseController::class, 'approve'])->whereNumber('purchase');
+            Route::post('/{purchase}/cancel',  [PurchaseController::class, 'cancel'])->whereNumber('purchase');
+            Route::post('/{purchase}/receive', [PurchaseReceiveController::class, 'receive'])->whereNumber('purchase');
+        });
 
-        // SubCategories CRUD (NEW)
-        Route::post('sub-categories',                   [SubCategoryController::class, 'store']);
-        Route::put('sub-categories/{subCategory}',      [SubCategoryController::class, 'update'])->whereNumber('subCategory');
-        Route::delete('sub-categories/{subCategory}',   [SubCategoryController::class, 'destroy'])->whereNumber('subCategory');
+        // Categories CRUD (PUT & PATCH dipisah)
+        Route::prefix('categories')->group(function () {
+            Route::post('/',                    [CategoryController::class, 'store']);
+            Route::put('/{category}',           [CategoryController::class, 'update'])->whereNumber('category');
+            Route::patch('/{category}',         [CategoryController::class, 'update'])->whereNumber('category');
+            Route::delete('/{category}',        [CategoryController::class, 'destroy'])->whereNumber('category');
+        });
 
-        // Products CRUD
-        Route::post('products',                    [ProductController::class, 'store']);
-        Route::put('products/{product}',           [ProductController::class, 'update'])->whereNumber('product');
-        Route::patch('products/{product}',         [ProductController::class, 'update'])->whereNumber('product');
-        Route::delete('products/{product}',        [ProductController::class, 'destroy'])->whereNumber('product');
-        Route::post('products/{product}/upload',   [ProductController::class, 'upload'])->whereNumber('product');
+        // SubCategories CRUD (tetap seperti semula: hanya PUT)
+        Route::prefix('sub-categories')->group(function () {
+            Route::post('/',                    [SubCategoryController::class, 'store']);
+            Route::put('/{subCategory}',        [SubCategoryController::class, 'update'])->whereNumber('subCategory');
+            Route::delete('/{subCategory}',     [SubCategoryController::class, 'destroy'])->whereNumber('subCategory');
+        });
 
-        // Stock adjustment manual (opsional, di luar sales/purchase)
-        Route::post('products/{product}/stock/change', [StockController::class,'change'])->whereNumber('product');
+        // Products CRUD + upload (PUT & PATCH dipisah)
+        Route::prefix('products')->group(function () {
+            Route::post('/',                    [ProductController::class, 'store']);
+            Route::put('/{product}',            [ProductController::class, 'update'])->whereNumber('product');
+            Route::patch('/{product}',          [ProductController::class, 'update'])->whereNumber('product');
+            Route::delete('/{product}',         [ProductController::class, 'destroy'])->whereNumber('product');
+            Route::post('/{product}/upload',    [ProductController::class, 'upload'])->whereNumber('product');
 
-        // Suppliers CRUD (admin only)
-        Route::post('suppliers',                 [SupplierController::class, 'store']);
-        Route::put('suppliers/{supplier}',       [SupplierController::class, 'update'])->whereNumber('supplier');
-        Route::delete('suppliers/{supplier}',    [SupplierController::class, 'destroy'])->whereNumber('supplier');
+            // Manual stock adjustment
+            Route::post('/{product}/stock/change', [StockController::class,'change'])->whereNumber('product');
+        });
+
+        // Suppliers CRUD (tetap: PUT saja)
+        Route::prefix('suppliers')->group(function () {
+            Route::post('/',                    [SupplierController::class, 'store']);
+            Route::put('/{supplier}',           [SupplierController::class, 'update'])->whereNumber('supplier');
+            Route::delete('/{supplier}',        [SupplierController::class, 'destroy'])->whereNumber('supplier');
+        });
 
         // Sales — void
-        Route::post('sales/{sale}/void',         [SaleController::class, 'void'])->whereNumber('sale');
+        Route::post('sales/{sale}/void',        [SaleController::class, 'void'])->whereNumber('sale');
     });
 });
-

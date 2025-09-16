@@ -2,123 +2,105 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Purchase;
-use App\Models\StockLog;
-use App\Models\Product;
-use App\Models\Supplier;
+use App\Http\Requests\StorePurchaseRequest;
+use App\Models\{Purchase, PurchaseItem};
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use App\Http\Requests\PurchaseReceiveRequest;
 
 class PurchaseController extends Controller
 {
-    // List + filter
-    public function index(Request $r) {
-        $q = Purchase::with(['product','supplier','user','approver'])->latest();
+  public function index(Request $r) {
+    $q = Purchase::with(['supplier:id,name','items.product:id,sku,name'])
+      ->when($r->status, fn($qq,$v)=>$qq->where('status',$v))
+      ->when($r->supplier_id, fn($qq,$v)=>$qq->where('supplier_id',$v))
+      ->when($r->from, fn($qq,$v)=>$qq->whereDate('order_date','>=',$v))
+      ->when($r->to, fn($qq,$v)=>$qq->whereDate('order_date','<=',$v))
+      ->orderByDesc('id');
 
-        if ($r->filled('status'))      $q->where('status', $r->status);              // pending|approved|rejected
-        if ($r->filled('supplier_id')) $q->where('supplier_id', $r->supplier_id);
-        if ($r->filled('product_id'))  $q->where('product_id', $r->product_id);
-        if ($r->filled('from'))        $q->whereDate('created_at', '>=', $r->from);
-        if ($r->filled('to'))          $q->whereDate('created_at', '<=', $r->to);
+    return response()->json($q->paginate(min(100,(int)($r->per_page ?? 15))));
+  }
 
-        return response()->json($q->paginate(20));
-    }
+  public function show(Purchase $purchase) {
+    return $purchase->load([
+      'supplier:id,name',
+      'items.product:id,sku,name'
+    ]);
+  }
 
-    // Detail
-    public function show(Purchase $purchase) {
-        return $purchase->load(['product','supplier','user','approver']);
-    }
+  // Create PO (draft)
+  public function store(StorePurchaseRequest $req) {
+    $data = $req->validated(); $userId = $req->user()->id;
 
-    // BUAT DRAFT PURCHASE (status: pending) — TIDAK MENAMBAH STOK
-    public function store(Request $r) {
-        $data = $r->validate([
-            'product_id'  => 'required|exists:products,id',
-            'supplier_id' => 'required|exists:suppliers,id',
-            'amount'      => 'required|integer|min:1',
-            'price'       => 'required|numeric|min:0',
-            'note'        => 'nullable|string',
+    $po = DB::transaction(function() use ($data,$userId) {
+      $po = Purchase::create([
+        'purchase_number'=> Purchase::nextNumber(),
+        'supplier_id'    => $data['supplier_id'],
+        'user_id'        => $userId,
+        'order_date'     => $data['order_date'],
+        'expected_date'  => $data['expected_date'] ?? null,
+        'status'         => 'draft',
+        'notes'          => $data['notes'] ?? null,
+        'other_cost'     => (float)($data['other_cost'] ?? 0),
+      ]);
+
+      $subtotal=0; $taxTotal=0;
+      foreach ($data['items'] as $it) {
+        $qty=(int)$it['qty_order']; $price=(float)$it['unit_price'];
+        $disc=(float)($it['discount'] ?? 0); $tax=(float)($it['tax'] ?? 0);
+        $line = ($qty*$price) - $disc + $tax;
+
+        PurchaseItem::create([
+          'purchase_id' => $po->id,
+          'product_id'  => $it['product_id'],
+          'qty_order'   => $qty,
+          'qty_received'=> 0,
+          'unit_price'  => $price,
+          'discount'    => $disc,
+          'tax'         => $tax,
+          'line_total'  => $line,
         ]);
 
-        $data['user_id'] = $r->user()->id;
-        $seq = Purchase::lockForUpdate()->count() + 1; // simple sequence; untuk high load pakai table sequences
-        $data['purchase_number'] = 'PO-'.now()->format('Ymd').'-'.str_pad($seq, 4, '0', STR_PAD_LEFT);
+        $subtotal += ($qty*$price) - $disc;
+        $taxTotal += $tax;
+      }
 
-        // Buat pending tanpa perubahan stok
-        $purchase = DB::transaction(function () use ($data) {
-            return Purchase::create($data + ['status' => 'pending']);
-        });
+      $po->update([
+        'subtotal'    => $subtotal,
+        'tax_total'   => $taxTotal,
+        'grand_total' => $subtotal + $taxTotal + $po->other_cost,
+      ]);
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Draft purchase dibuat (pending). Lakukan GR untuk menambah stok.',
-            'data'    => $purchase
-        ], 201);
+      return $po->load('items.product:id,sku,name');
+    });
+
+    return response()->json($po, 201);
+  }
+
+  // Approve PO
+  public function approve(Request $r, Purchase $purchase) {
+    if ($purchase->status !== 'draft') {
+      return response()->json(['message'=>'Only draft can be approved'],422);
     }
-
-    // APPROVE (GR) — MENAMBAH STOK & LOG
-    public function approve(Request $r, Purchase $purchase) {
-        if ($purchase->status !== 'pending') {
-            return response()->json([
-                'success' => false,
-                'message' => 'Purchase tidak dalam status pending.'
-            ], 422);
-        }
-
-        DB::transaction(function () use ($r, $purchase) {
-            // lock product row to avoid race
-            $product = Product::whereKey($purchase->product_id)->lockForUpdate()->first();
-
-            // tambah stok
-            $product->increment('stock', $purchase->amount);
-
-            // stock log
-            StockLog::create([
-                'product_id'  => $product->id,
-                'user_id'     => $r->user()->id,
-                'change_type' => 'in',
-                'quantity'    => $purchase->amount,
-                'note'        => 'GR '.$purchase->purchase_number,
-            ]);
-
-            // set approved
-            $purchase->update([
-                'status'      => 'approved',
-                'approved_by' => $r->user()->id,
-                'approved_at' => now(),
-                // boleh simpan note GR dari request kalau dikirim
-                'note'        => $r->input('note', $purchase->note),
-            ]);
-        });
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Purchase disetujui & stok bertambah.',
-            'data'    => $purchase->fresh(['product','supplier','user','approver'])
-        ]);
+    if (!$purchase->items()->exists()) {
+      return response()->json(['message'=>'No items to approve'],422);
     }
+    $purchase->update([
+      'status'=>'approved',
+      'approved_by'=>$r->user()->id,
+      'approved_at'=>now()
+    ]);
+    return response()->json(['message'=>'Purchase approved','status'=>'approved']);
+  }
 
-    // REJECT — TIDAK MENAMBAH STOK
-    public function reject(Request $r, Purchase $purchase) {
-        if ($purchase->status !== 'pending') {
-            return response()->json([
-                'success' => false,
-                'message' => 'Purchase tidak dalam status pending.'
-            ], 422);
-        }
-
-        $purchase->update([
-            'status'      => 'rejected',
-            'approved_by' => $r->user()->id,
-            'approved_at' => now(),
-            'note'        => $r->input('note', $purchase->note),
-        ]);
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Purchase ditolak. Stok tidak berubah.',
-            'data'    => $purchase->fresh(['product','supplier','user','approver'])
-        ]);
+  // Cancel PO (optional)
+  public function cancel(Purchase $purchase) {
+    if (in_array($purchase->status,['closed','partially_received'])) {
+      return response()->json(['message'=>'Cannot cancel received PO'],422);
     }
+    $purchase->update(['status'=>'canceled']);
+    return response()->json(['message'=>'Purchase canceled']);
+  }
 }
 
 

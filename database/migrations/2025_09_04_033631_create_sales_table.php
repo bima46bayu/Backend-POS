@@ -39,7 +39,7 @@ return new class extends Migration {
         Schema::create('sale_payments', function (Blueprint $table) {
             $table->id();
             $table->unsignedBigInteger('sale_id');
-            $table->enum('method', ['cash','card','ewallet','transfer']);
+            $table->enum('method', ['cash','card','ewallet','transfer','QRIS']);
             $table->decimal('amount', 12, 2);
             $table->string('reference')->nullable();
             $table->timestamps();

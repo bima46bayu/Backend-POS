@@ -1,24 +1,28 @@
 {
   "info": {
-    "name": "POS API (Sanctum) — Admin & Kasir + Purchasing (GR)",
-    "_postman_id": "9d8f51c7-47f2-4e8f-9e0f-abcdef123456",
-    "description": "Collection lengkap untuk cek akses Admin & Kasir: Auth, Categories, Products, Stock Logs, Sales (Transaksi), Upload Gambar, Search & Filter, Suppliers, SubCategories, Purchases dengan approval (GR).",
+    "name": "POS API (Sanctum) — Admin & Kasir + Purchasing (PO Multi-Item & GR)",
+    "_postman_id": "9d8f51c7-47f2-4e8f-9e0f-abcdef654321",
+    "description": "Urutan lengkap: Register → Login → Master Data → Produk → Purchasing (PO header+items) → GR (for-receipt + receive) → Stock Logs → Sales → Logout.\nRoles: admin & kasir. GR akan menambah stok + tulis stock_logs (change_type=in).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     { "key": "base_url", "value": "http://127.0.0.1:8000" },
     { "key": "auth_token", "value": "" },
-    { "key": "scan_sku", "value": "123" },
+
     { "key": "category_id", "value": "1" },
     { "key": "sub_category_id", "value": "1" },
-    { "key": "product_id", "value": "1" },
     { "key": "supplier_id", "value": "1" },
-    { "key": "sale_id", "value": "1" },
-    { "key": "purchase_id", "value": "1" }
+    { "key": "product_id", "value": "1" },
+
+    { "key": "purchase_id", "value": "1" },
+    { "key": "goods_receipt_id", "value": "1" },
+
+    { "key": "scan_sku", "value": "SKU-001" },
+    { "key": "sale_id", "value": "1" }
   ],
   "item": [
     {
-      "name": "Auth",
+      "name": "01 Auth",
       "item": [
         {
           "name": "Register (Admin)",
@@ -58,7 +62,7 @@
                   "    pm.collectionVariables.set('auth_token', data.token);",
                   "    pm.test('Stored auth token', function(){ pm.expect(pm.collectionVariables.get('auth_token')).to.be.ok; });",
                   "  }",
-                  "} catch(e) { /* ignore */ }"
+                  "} catch(e) {}"
                 ]
               }
             }
@@ -72,443 +76,141 @@
               "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"password\"\n}"
             }
           }
-        },
-        {
-          "name": "Logout",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
-            ],
-            "url": { "raw": "{{base_url}}/api/logout", "host": ["{{base_url}}"], "path": ["api","logout"] }
-          }
         }
       ]
     },
 
     {
-      "name": "Kasir — Allowed (GET & Transaksi)",
-      "item": [
-        {
-          "name": "GET Categories (list)",
-          "request": {
-            "method": "GET",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
-            ],
-            "url": { "raw": "{{base_url}}/api/categories", "host": ["{{base_url}}"], "path": ["api","categories"] }
-          }
-        },
-        {
-          "name": "GET Category (detail)",
-          "request": {
-            "method": "GET",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
-            ],
-            "url": { "raw": "{{base_url}}/api/categories/{{category_id}}", "host": ["{{base_url}}"], "path": ["api","categories","{{category_id}}"] }
-          }
-        },
-        {
-          "name": "GET Products (list + search & filter)",
-          "request": {
-            "method": "GET",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/products?search=kaos&category_id={{category_id}}",
-              "host": ["{{base_url}}"],
-              "path": ["api","products"],
-              "query": [
-                { "key": "search", "value": "kaos" },
-                { "key": "category_id", "value": "{{category_id}}" }
-              ]
-            }
-          }
-        },
-        {
-          "name": "GET Product (detail)",
-          "request": {
-            "method": "GET",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
-            ],
-            "url": { "raw": "{{base_url}}/api/products/{{product_id}}", "host": ["{{base_url}}"], "path": ["api","products","{{product_id}}"] }
-          }
-        },
-        {
-          "name": "SCAN Product by SKU (/products/search)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('HTTP 200/404', function(){ pm.expect([200,404]).to.include(pm.response.code); });"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "GET",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/products/search?sku={{scan_sku}}",
-              "host": ["{{base_url}}"],
-              "path": ["api","products","search"],
-              "query": [{ "key": "sku", "value": "{{scan_sku}}" }]
-            }
-          }
-        },
-        {
-          "name": "SCAN (Alternatif) via index (/products?sku=...)",
-          "request": {
-            "method": "GET",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/products?sku={{scan_sku}}",
-              "host": ["{{base_url}}"],
-              "path": ["api","products"],
-              "query": [{ "key": "sku", "value": "{{scan_sku}}" }]
-            }
-          }
-        },
-        {
-          "name": "GET Stock Logs (riwayat)",
-          "request": {
-            "method": "GET",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/stock-logs?product_id={{product_id}}",
-              "host": ["{{base_url}}"],
-              "path": ["api","stock-logs"],
-              "query": [{ "key": "product_id", "value": "{{product_id}}" }]
-            }
-          }
-        },
-        {
-          "name": "GET Sales (list)",
-          "request": {
-            "method": "GET",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
-            ],
-            "url": { "raw": "{{base_url}}/api/sales", "host": ["{{base_url}}"], "path": ["api","sales"] }
-          }
-        },
-        {
-          "name": "GET Sale (detail)",
-          "request": {
-            "method": "GET",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
-            ],
-            "url": { "raw": "{{base_url}}/api/sales/{{sale_id}}", "host": ["{{base_url}}"], "path": ["api","sales","{{sale_id}}"] }
-          }
-        },
-        {
-          "name": "POST Sale (buat transaksi)",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" },
-              { "key": "Content-Type", "value": "application/json" }
-            ],
-            "url": { "raw": "{{base_url}}/api/sales", "host": ["{{base_url}}"], "path": ["api","sales"] },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"customer_name\": \"Budi\",\n  \"items\": [\n    {\"product_id\": {{product_id}}, \"qty\": 2},\n    {\"product_id\": 3, \"qty\": 1}\n  ],\n  \"discount\": 0,\n  \"tax\": 0,\n  \"payments\": [\n    {\"method\": \"cash\", \"amount\": 400000}\n  ]\n}"
-            }
-          }
-        }
-      ]
-    },
-
-    {
-      "name": "Admin — Mutasi, Master Data, Void",
+      "name": "02 Master Data (Admin)",
       "item": [
         {
           "name": "POST Category (create)",
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
             ],
-            "url": { "raw": "{{base_url}}/api/categories", "host": ["{{base_url}}"], "path": ["api","categories"] },
-            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Kaos\"\n}" }
+            "url": {"raw":"{{base_url}}/api/categories","host":["{{base_url}}"],"path":["api","categories"]},
+            "body": {"mode":"raw","raw":"{\n  \"name\": \"Pakaian\"\n}"}
           }
         },
         {
-          "name": "PUT Category (update)",
+          "name": "POST SubCategory (create)",
           "request": {
-            "method": "PUT",
+            "method": "POST",
             "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
             ],
-            "url": { "raw": "{{base_url}}/api/categories/{{category_id}}", "host": ["{{base_url}}"], "path": ["api","categories","{{category_id}}"] },
-            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Kaos Premium\"\n}" }
+            "url": {"raw":"{{base_url}}/api/sub-categories","host":["{{base_url}}"],"path":["api","sub-categories"]},
+            "body": {"mode":"raw","raw":"{\n  \"category_id\": {{category_id}},\n  \"name\": \"Kaos\"\n}"}
           }
         },
         {
-          "name": "DELETE Category",
+          "name": "POST Supplier (create)",
           "request": {
-            "method": "DELETE",
+            "method": "POST",
             "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
             ],
-            "url": { "raw": "{{base_url}}/api/categories/{{category_id}}", "host": ["{{base_url}}"], "path": ["api","categories","{{category_id}}"] }
+            "url": {"raw":"{{base_url}}/api/suppliers","host":["{{base_url}}"],"path":["api","suppliers"]},
+            "body": {"mode":"raw","raw":"{\n  \"name\": \"PT Tekstil Makmur\",\n  \"contact\": \"08123456789\"\n}"}
           }
-        },
+        }
+      ]
+    },
+
+    {
+      "name": "03 Products",
+      "item": [
         {
           "name": "POST Product (create)",
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" },
-              { "key": "Content-Type", "value": "application/json" }
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
             ],
-            "url": { "raw": "{{base_url}}/api/products", "host": ["{{base_url}}"], "path": ["api","products"] },
+            "url": {"raw":"{{base_url}}/api/products","host":["{{base_url}}"],"path":["api","products"]},
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"Kaos Logo\",\n  \"description\": \"Kaos dengan logo official\",\n  \"price\": 120000,\n  \"category_id\": {{category_id}},\n  \"sub_category_id\": {{sub_category_id}},\n  \"sku\": \"SKU-001\",\n  \"stock\": 0\n}"
+              "raw": "{\n  \"sku\": \"SKU-001\",\n  \"name\": \"Kaos Logo\",\n  \"description\": \"Kaos logo official\",\n  \"price\": 120000,\n  \"category_id\": {{category_id}},\n  \"sub_category_id\": {{sub_category_id}},\n  \"stock\": 0\n}"
             }
           }
         },
         {
-          "name": "POST Product Upload Image",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
-            ],
-            "url": { "raw": "{{base_url}}/api/products/{{product_id}}/upload", "host": ["{{base_url}}"], "path": ["api","products","{{product_id}}","upload"] },
-            "body": {
-              "mode": "formdata",
-              "formdata": [{ "key": "image", "type": "file", "src": "" }]
-            }
-          }
-        },
-        {
-          "name": "PUT Product (update)",
-          "request": {
-            "method": "PUT",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" },
-              { "key": "Content-Type", "value": "application/json" }
-            ],
-            "url": { "raw": "{{base_url}}/api/products/{{product_id}}", "host": ["{{base_url}}"], "path": ["api","products","{{product_id}}"] },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"name\": \"Kaos Logo Edisi 2\",\n  \"description\": \"Bahan katun premium\",\n  \"price\": 135000,\n  \"category_id\": {{category_id}},\n  \"sub_category_id\": {{sub_category_id}}\n}"
-            }
-          }
-        },
-        {
-          "name": "DELETE Product",
-          "request": {
-            "method": "DELETE",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
-            ],
-            "url": { "raw": "{{base_url}}/api/products/{{product_id}}", "host": ["{{base_url}}"], "path": ["api","products","{{product_id}}"] }
-          }
-        },
-        {
-          "name": "POST Stock Change (in/out/adjustment) — manual (opsional)",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" },
-              { "key": "Content-Type", "value": "application/json" }
-            ],
-            "url": { "raw": "{{base_url}}/api/products/{{product_id}}/stock/change", "host": ["{{base_url}}"], "path": ["api","products","{{product_id}}","stock","change"] },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"change_type\": \"in\",\n  \"quantity\": 5,\n  \"note\": \"Restock awal\"\n}"
-            }
-          }
-        },
-        {
-          "name": "POST Sale Void (kembalikan stok)",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
-            ],
-            "url": { "raw": "{{base_url}}/api/sales/{{sale_id}}/void", "host": ["{{base_url}}"], "path": ["api","sales","{{sale_id}}","void"] }
-          }
-        }
-      ]
-    },
-
-    {
-      "name": "Master Data — Suppliers & SubCategories",
-      "item": [
-        {
-          "name": "GET Suppliers (list)",
+          "name": "GET Products (list + search)",
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
-            ],
-            "url": { "raw": "{{base_url}}/api/suppliers", "host": ["{{base_url}}"], "path": ["api","suppliers"] }
-          }
-        },
-        {
-          "name": "GET Supplier (detail)",
-          "request": {
-            "method": "GET",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
-            ],
-            "url": { "raw": "{{base_url}}/api/suppliers/{{supplier_id}}", "host": ["{{base_url}}"], "path": ["api","suppliers","{{supplier_id}}"] }
-          }
-        },
-        {
-          "name": "POST Supplier (create) — admin",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" },
-              { "key": "Content-Type", "value": "application/json" }
-            ],
-            "url": { "raw": "{{base_url}}/api/suppliers", "host": ["{{base_url}}"], "path": ["api","suppliers"] },
-            "body": { "mode": "raw", "raw": "{\n  \"name\": \"PT Tekstil Makmur\",\n  \"contact\": \"08123456789\"\n}" }
-          }
-        },
-        {
-          "name": "PUT Supplier (update) — admin",
-          "request": {
-            "method": "PUT",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" },
-              { "key": "Content-Type", "value": "application/json" }
-            ],
-            "url": { "raw": "{{base_url}}/api/suppliers/{{supplier_id}}", "host": ["{{base_url}}"], "path": ["api","suppliers","{{supplier_id}}"] },
-            "body": { "mode": "raw", "raw": "{\n  \"name\": \"PT Tekstil Makmur Jaya\",\n  \"contact\": \"08129876543\"\n}" }
-          }
-        },
-        {
-          "name": "DELETE Supplier — admin",
-          "request": {
-            "method": "DELETE",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
-            ],
-            "url": { "raw": "{{base_url}}/api/suppliers/{{supplier_id}}", "host": ["{{base_url}}"], "path": ["api","suppliers","{{supplier_id}}"] }
-          }
-        },
-
-        {
-          "name": "GET SubCategories (list)",
-          "request": {
-            "method": "GET",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
-            ],
-            "url": { "raw": "{{base_url}}/api/sub-categories", "host": ["{{base_url}}"], "path": ["api","sub-categories"] }
-          }
-        },
-        {
-          "name": "GET SubCategory (detail)",
-          "request": {
-            "method": "GET",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
-            ],
-            "url": { "raw": "{{base_url}}/api/sub-categories/{{sub_category_id}}", "host": ["{{base_url}}"], "path": ["api","sub-categories","{{sub_category_id}}"] }
-          }
-        },
-        {
-          "name": "POST SubCategory (create) — admin",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" },
-              { "key": "Content-Type", "value": "application/json" }
-            ],
-            "url": { "raw": "{{base_url}}/api/sub-categories", "host": ["{{base_url}}"], "path": ["api","sub-categories"] },
-            "body": { "mode": "raw", "raw": "{\n  \"category_id\": {{category_id}},\n  \"name\": \"Kaos Lengan Panjang\"\n}" }
-          }
-        },
-        {
-          "name": "PUT SubCategory (update) — admin",
-          "request": {
-            "method": "PUT",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" },
-              { "key": "Content-Type", "value": "application/json" }
-            ],
-            "url": { "raw": "{{base_url}}/api/sub-categories/{{sub_category_id}}", "host": ["{{base_url}}"], "path": ["api","sub-categories","{{sub_category_id}}"] },
-            "body": { "mode": "raw", "raw": "{\n  \"category_id\": {{category_id}},\n  \"name\": \"Kaos Lengan Pendek\"\n}" }
-          }
-        },
-        {
-          "name": "DELETE SubCategory — admin",
-          "request": {
-            "method": "DELETE",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
-            ],
-            "url": { "raw": "{{base_url}}/api/sub-categories/{{sub_category_id}}", "host": ["{{base_url}}"], "path": ["api","sub-categories","{{sub_category_id}}"] }
-          }
-        }
-      ]
-    },
-
-    {
-      "name": "Purchasing (Draft & GR Approval)",
-      "item": [
-        {
-          "name": "GET Purchases (filter status)",
-          "request": {
-            "method": "GET",
-            "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
             ],
             "url": {
-              "raw": "{{base_url}}/api/purchases?status=pending",
+              "raw": "{{base_url}}/api/products?search=Kaos",
+              "host": ["{{base_url}}"],
+              "path": ["api","products"],
+              "query": [{"key":"search","value":"Kaos"}]
+            }
+          }
+        },
+        {
+          "name": "SCAN by SKU (/products/search)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/products/search?sku={{scan_sku}}",
+              "host": ["{{base_url}}"],
+              "path": ["api","products","search"],
+              "query": [{"key":"sku","value":"{{scan_sku}}"}]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "04 Purchasing — PO (Header + Items)",
+      "item": [
+        {
+          "name": "POST Purchase (Create Draft — multi-item)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
+            "url": {"raw":"{{base_url}}/api/purchases","host":["{{base_url}}"],"path":["api","purchases"]},
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplier_id\": {{supplier_id}},\n  \"order_date\": \"2025-09-16\",\n  \"expected_date\": \"2025-09-20\",\n  \"notes\": \"Urgent for promo\",\n  \"other_cost\": 25000,\n  \"items\": [\n    { \"product_id\": {{product_id}}, \"qty_order\": 10, \"unit_price\": 90000, \"discount\": 0, \"tax\": 0 },\n    { \"product_id\": 2, \"qty_order\": 5,  \"unit_price\": 150000, \"discount\": 0, \"tax\": 0 }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "GET Purchases (filter status=draft/approved/partially_received/closed)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/purchases?status=draft",
               "host": ["{{base_url}}"],
               "path": ["api","purchases"],
-              "query": [{ "key": "status", "value": "pending" }]
+              "query": [{"key":"status","value":"draft"}]
             }
           }
         },
@@ -517,52 +219,230 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
             ],
-            "url": { "raw": "{{base_url}}/api/purchases/{{purchase_id}}", "host": ["{{base_url}}"], "path": ["api","purchases","{{purchase_id}}"] }
+            "url": {"raw":"{{base_url}}/api/purchases/{{purchase_id}}","host":["{{base_url}}"],"path":["api","purchases","{{purchase_id}}"]}
           }
         },
         {
-          "name": "POST Purchase (Create Draft - pending) — kasir/admin",
+          "name": "POST Purchase Approve (ubah status → approved)",
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" },
-              { "key": "Content-Type", "value": "application/json" }
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
             ],
-            "url": { "raw": "{{base_url}}/api/purchases", "host": ["{{base_url}}"], "path": ["api","purchases"] },
+            "url": {"raw":"{{base_url}}/api/purchases/{{purchase_id}}/approve","host":["{{base_url}}"],"path":["api","purchases","{{purchase_id}}","approve"]}
+          }
+        },
+        {
+          "name": "POST Purchase Cancel (jika perlu)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/purchases/{{purchase_id}}/cancel","host":["{{base_url}}"],"path":["api","purchases","{{purchase_id}}","cancel"]}
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "05 Goods Receipt (GR) — dari halaman Purchase",
+      "item": [
+        {
+          "name": "GET For-Receipt (load remaining per item)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/purchases/{{purchase_id}}/for-receipt","host":["{{base_url}}"],"path":["api","purchases","{{purchase_id}}","for-receipt"]}
+          }
+        },
+        {
+          "name": "POST Receive (buat + post GR, tambah stok & stock_logs)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
+            "url": {"raw":"{{base_url}}/api/purchases/{{purchase_id}}/receive","host":["{{base_url}}"],"path":["api","purchases","{{purchase_id}}","receive"]},
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"product_id\": {{product_id}},\n  \"supplier_id\": {{supplier_id}},\n  \"amount\": 50,\n  \"price\": 85000,\n  \"note\": \"PO supplier A\"\n}"
+              "raw": "{\n  \"received_date\": \"2025-09-16\",\n  \"notes\": \"Batch 1\",\n  \"items\": [\n    { \"purchase_item_id\": 1, \"qty_received\": 10, \"condition_notes\": \"OK\" },\n    { \"purchase_item_id\": 2, \"qty_received\": 2,  \"condition_notes\": \"Dus penyok\" }\n  ]\n}"
             }
           }
         },
         {
-          "name": "POST Purchase Approve (GR) — admin",
+          "name": "GET Receipts (list) — opsional",
           "request": {
-            "method": "POST",
+            "method": "GET",
             "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" },
-              { "key": "Content-Type", "value": "application/json" }
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
             ],
-            "url": { "raw": "{{base_url}}/api/purchases/{{purchase_id}}/approve", "host": ["{{base_url}}"], "path": ["api","purchases","{{purchase_id}}","approve"] },
-            "body": { "mode": "raw", "raw": "{\n  \"note\": \"GR oleh Admin\"\n}" }
+            "url": {"raw":"{{base_url}}/api/receipts","host":["{{base_url}}"],"path":["api","receipts"]}
           }
         },
         {
-          "name": "POST Purchase Reject — admin",
+          "name": "GET Receipt (detail) — opsional",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/receipts/{{goods_receipt_id}}","host":["{{base_url}}"],"path":["api","receipts","{{goods_receipt_id}}"]}
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "06 Stock Logs & Inventory",
+      "item": [
+        {
+          "name": "GET Stock Logs by Product",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/stock-logs?product_id={{product_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api","stock-logs"],
+              "query": [{"key":"product_id","value":"{{product_id}}"}]
+            }
+          }
+        },
+        {
+          "name": "POST Stock Adjustment (manual, opsional)",
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Accept", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{auth_token}}" },
-              { "key": "Content-Type", "value": "application/json" }
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
             ],
-            "url": { "raw": "{{base_url}}/api/purchases/{{purchase_id}}/reject", "host": ["{{base_url}}"], "path": ["api","purchases","{{purchase_id}}","reject"] },
-            "body": { "mode": "raw", "raw": "{\n  \"note\": \"Harga tidak sesuai\"\n}" }
+            "url": {"raw":"{{base_url}}/api/products/{{product_id}}/stock/change","host":["{{base_url}}"],"path":["api","products","{{product_id}}","stock","change"]},
+            "body": {"mode":"raw","raw":"{\n  \"change_type\": \"adjustment\",\n  \"quantity\": -2,\n  \"note\": \"Koreksi stok fisik\"\n}"}
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "07 Sales (POS)",
+      "item": [
+        {
+          "name": "POST Sale (transaksi)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
+            "url": {"raw":"{{base_url}}/api/sales","host":["{{base_url}}"],"path":["api","sales"]},
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customer_name\": \"Budi\",\n  \"items\": [\n    {\"product_id\": {{product_id}}, \"qty\": 2},\n    {\"product_id\": 2, \"qty\": 1}\n  ],\n  \"discount\": 0,\n  \"tax\": 0,\n  \"payments\": [\n    {\"method\": \"cash\", \"amount\": 400000}\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "GET Sales (list)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/sales","host":["{{base_url}}"],"path":["api","sales"]}
+          }
+        },
+        {
+          "name": "GET Sale (detail)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/sales/{{sale_id}}","host":["{{base_url}}"],"path":["api","sales","{{sale_id}}"]}
+          }
+        },
+        {
+          "name": "POST Sale Void (admin — kembalikan stok)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/sales/{{sale_id}}/void","host":["{{base_url}}"],"path":["api","sales","{{sale_id}}","void"]}
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "08 Read-Only (Referensi)",
+      "item": [
+        {
+          "name": "GET Categories (list)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/categories","host":["{{base_url}}"],"path":["api","categories"]}
+          }
+        },
+        {
+          "name": "GET Products (by category & search)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/products?category_id={{category_id}}&search=logo",
+              "host": ["{{base_url}}"],
+              "path": ["api","products"],
+              "query": [
+                {"key":"category_id","value":"{{category_id}}"},
+                {"key":"search","value":"logo"}
+              ]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "09 Logout",
+      "item": [
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/logout","host":["{{base_url}}"],"path":["api","logout"]}
           }
         }
       ]
