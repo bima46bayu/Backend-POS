@@ -37,7 +37,7 @@ class ProductController extends Controller
         }
 
 
-        return response()->json($query->paginate(10)); 
+        return $query->orderBy('id', 'asc')->get();
     }
 
 

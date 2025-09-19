@@ -40,41 +40,53 @@ class SaleController extends Controller
     public function store(StoreSaleRequest $request)
     {
         $user = Auth::user();
-
-        // (opsional) validasi role kasir/admin
         // if (!in_array($user->role, ['kasir','admin'])) abort(403, 'Forbidden');
 
         return DB::transaction(function () use ($request, $user) {
-            $itemsInput = $request->items;
+            $itemsInput = $request->items ?? [];
+            if (empty($itemsInput)) {
+                abort(422, 'Items tidak boleh kosong');
+            }
 
-            // Ambil harga & stok produk terkini
+            // Ambil produk & kunci stok
             $productIds = collect($itemsInput)->pluck('product_id')->all();
             $products = Product::whereIn('id', $productIds)->lockForUpdate()->get()->keyBy('id');
 
-            $subtotal = 0;
+            $subtotal = 0.0;
             $saleItemsPayload = [];
 
             foreach ($itemsInput as $row) {
                 $product = $products[$row['product_id']] ?? null;
                 if (!$product) abort(422, "Product {$row['product_id']} not found.");
 
-                $qty = (int) $row['qty'];
+                $qty = (int) ($row['qty'] ?? 0);
                 if ($qty < 1) abort(422, 'Qty minimal 1');
 
-                // Cek stok cukup
+                // Cek stok
                 if ($product->stock < $qty) {
                     abort(422, "Stok tidak cukup untuk {$product->name} (tersisa {$product->stock})");
                 }
 
-                $price = (float) $product->price; // snapshot harga
-                $lineSubtotal = $price * $qty;
-                $subtotal += $lineSubtotal;
+                // Snapshot harga unit dari produk (atau boleh override dari request jika kamu izinkan)
+                $unitPrice = (float) ($row['unit_price'] ?? $product->price);
+
+                // Diskon nominal PER UNIT dari request (frontend sudah konversi)
+                $discUnit = round((float)($row['discount_nominal'] ?? 0), 2);
+                // Clamp agar tidak melebihi harga unit
+                $discUnit = max(0, min($discUnit, $unitPrice));
+
+                $netUnit   = round($unitPrice - $discUnit, 2);
+                $lineTotal = round($netUnit * $qty, 2);
+
+                $subtotal += $lineTotal;
 
                 $saleItemsPayload[] = [
-                    'product_id' => $product->id,
-                    'price'      => $price,
-                    'qty'        => $qty,
-                    'subtotal'   => $lineSubtotal,
+                    'product_id'       => $product->id,
+                    'unit_price'       => $unitPrice,
+                    'discount_nominal' => $discUnit,   // per unit
+                    'net_unit_price'   => $netUnit,
+                    'qty'              => $qty,
+                    'line_total'       => $lineTotal,
                 ];
 
                 // Kurangi stok & catat log OUT
@@ -89,60 +101,91 @@ class SaleController extends Controller
                 ]);
             }
 
-            $discount = (float) ($request->discount ?? 0);
-            $tax      = (float) ($request->tax ?? 0);
-            $total    = max(0, $subtotal - $discount + $tax);
+            // Header adjustments
+            $extraDiscount = round((float)($request->discount ?? 0), 2);         // diskon header (Rp)
+            $extraDiscount = max(0, min($extraDiscount, $subtotal));             // tidak boleh melebihi subtotal
 
-            // Hitung total pembayaran
-            $paid = collect($request->payments)->sum('amount');
-            $change = max(0, $paid - $total);
+            $serviceCharge = round((float)($request->service_charge ?? 0), 2);   // biaya layanan (Rp, optional)
+
+            // Pajak: dukung dua cara:
+            // 1) tax_percent -> hitung dari (subtotal - discount + service_charge)
+            // 2) tax (nominal) -> pakai langsung jika tax_percent tidak diisi
+            $taxPercent = $request->filled('tax_percent') ? (float)$request->tax_percent : null;
+            $taxBase    = max(0, $subtotal - $extraDiscount + $serviceCharge);
+            if ($taxPercent !== null) {
+                $tax = round($taxBase * ($taxPercent / 100), 2);
+            } else {
+                $tax = round((float)($request->tax ?? 0), 2);
+            }
+
+            $total = round($taxBase + $tax, 2);
+
+            // Pembayaran (array payments: [{method, amount, reference?}])
+            $payments = $request->payments ?? [];
+            if (!is_array($payments) || empty($payments)) {
+                abort(422, 'Payments tidak boleh kosong');
+            }
+            $paid = 0.0;
+            foreach ($payments as $p) {
+                $paid += (float)($p['amount'] ?? 0);
+            }
+            $paid   = round($paid, 2);
+            $change = round(max(0, $paid - $total), 2);
 
             if ($paid < $total) {
                 abort(422, "Pembayaran kurang Rp " . number_format($total - $paid, 0, ',', '.'));
             }
 
-            // Buat kode transaksi
-            $code = 'POS-'.now()->format('Ymd').'-'.str_pad((string)(Sale::whereDate('created_at', now())->count()+1), 4, '0', STR_PAD_LEFT);
+            // Generate Kode
+            $seq = Sale::whereDate('created_at', now())->lockForUpdate()->count() + 1;
+            $code = 'POS-' . now()->format('Ymd') . '-' . str_pad((string)$seq, 4, '0', STR_PAD_LEFT);
 
+            // Simpan header sale
             $sale = Sale::create([
                 'code'          => $code,
                 'cashier_id'    => $user->id,
                 'customer_name' => $request->customer_name,
-                'subtotal'      => $subtotal,
-                'discount'      => $discount,
-                'tax'           => $tax,
+                'subtotal'      => $subtotal,          // setelah diskon item
+                'discount'      => $extraDiscount,     // diskon header
+                'service_charge'=> $serviceCharge,     // NEW
+                'tax'           => $tax,               // nominal tax
                 'total'         => $total,
                 'paid'          => $paid,
                 'change'        => $change,
                 'status'        => 'completed',
             ]);
 
-            // Insert items
+            // Simpan items
             foreach ($saleItemsPayload as $payload) {
                 $payload['sale_id'] = $sale->id;
                 SaleItem::create($payload);
             }
 
-            // Insert payments
-            foreach ($request->payments as $p) {
+            // Simpan payments
+            foreach ($payments as $p) {
                 SalePayment::create([
                     'sale_id'   => $sale->id,
-                    'method'    => $p['method'],
+                    // Pastikan enum method konsisten dengan migrasi: ['cash','card','ewallet','transfer','QRIS']
+                    // Jika frontend kirim 'qris' kecil, normalisasi di sini:
+                    'method'    => strtoupper($p['method']) === 'QRIS' ? 'QRIS' : $p['method'],
                     'amount'    => $p['amount'],
                     'reference' => $p['reference'] ?? null,
                 ]);
             }
 
-            // Update note stock_logs dengan code sale (biar rapi jejaknya)
+            // Update note stock_logs → pakai code sale
             StockLog::where('note', 'sale (temp)')
                 ->whereIn('product_id', $productIds)
                 ->where('user_id', $user->id)
-                ->latest()->take(count($saleItemsPayload))
+                ->latest()
+                ->take(count($saleItemsPayload))
                 ->update(['note' => "sale #{$sale->code}"]);
 
+            // Response lengkap
             return response()->json($sale->load(['items.product','payments','cashier']), 201);
         });
     }
+
 
     // OPTIONAL: void/cancel sale (kembalikan stok)
     public function void(Sale $sale, Request $request)

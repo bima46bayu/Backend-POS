@@ -11,10 +11,13 @@ return new class extends Migration {
             $table->string('code')->unique();
             $table->unsignedBigInteger('cashier_id');
             $table->string('customer_name')->nullable();
-            $table->decimal('subtotal', 12, 2);
-            $table->decimal('discount', 12, 2)->default(0);
-            $table->decimal('tax', 12, 2)->default(0);
-            $table->decimal('total', 12, 2);
+
+            // ringkasan header
+            $table->decimal('subtotal', 12, 2);                 // total setelah diskon item, sebelum diskon header & pajak
+            $table->decimal('discount', 12, 2)->default(0);     // diskon header (opsional)
+            $table->decimal('service_charge', 12, 2)->default(0); // tambahan biaya layanan
+            $table->decimal('tax', 12, 2)->default(0);          // pajak header
+            $table->decimal('total', 12, 2);                    // grand total
             $table->decimal('paid', 12, 2)->default(0);
             $table->decimal('change', 12, 2)->default(0);
             $table->enum('status', ['completed','void'])->default('completed');
@@ -27,19 +30,28 @@ return new class extends Migration {
             $table->id();
             $table->unsignedBigInteger('sale_id');
             $table->unsignedBigInteger('product_id');
-            $table->decimal('price', 12, 2);
+
+            // harga & diskon per item
+            $table->decimal('unit_price', 12, 2);              // harga asli per unit (sebelum diskon)
+            $table->decimal('discount_nominal', 12, 2)->default(0); // diskon per unit (nominal)
+            $table->decimal('net_unit_price', 12, 2)->default(0);   // unit_price - discount_nominal
+
             $table->integer('qty');
-            $table->decimal('subtotal', 12, 2);
+            $table->decimal('line_total', 14, 2);              // net_unit_price * qty
             $table->timestamps();
 
             $table->foreign('sale_id')->references('id')->on('sales')->onDelete('cascade');
             $table->foreign('product_id')->references('id')->on('products')->onDelete('restrict');
+
+            // (opsional tapi direkomendasikan)
+            $table->index(['sale_id']);
+            $table->index(['product_id']);
         });
 
         Schema::create('sale_payments', function (Blueprint $table) {
             $table->id();
             $table->unsignedBigInteger('sale_id');
-            $table->enum('method', ['cash','card','ewallet','transfer','QRIS']);
+            $table->enum('method', ['cash','card','ewallet','transfer','QRIS']); // samakan dengan enum di sisi app
             $table->decimal('amount', 12, 2);
             $table->string('reference')->nullable();
             $table->timestamps();
@@ -54,4 +66,3 @@ return new class extends Migration {
         Schema::dropIfExists('sales');
     }
 };
-
