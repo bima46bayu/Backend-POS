@@ -1,0 +1,14 @@
+Options +FollowSymLinks
+RewriteEngine Off
+
+# Allow image files
+<FilesMatch "\.(jpg|jpeg|png|gif|svg|webp)$">
+    Order Allow,Deny
+    Allow from all
+</FilesMatch>
+
+# Block PHP files
+<FilesMatch "\.php$">
+    Order Allow,Deny
+    Deny from all
+</FilesMatch>

@@ -85,31 +85,48 @@ class ProductController extends Controller
         return response()->json(['message' => 'Product deleted']);
     }
 
-
     public function upload(Product $product, Request $request)
     {
+        // Validasi file
         $request->validate([
             'image' => ['required','image','mimes:jpg,jpeg,png,svg','max:5120'],
         ]);
-
+        
         $file = $request->file('image');
-
-        $path = $file->storeAs(
-            'products', // -> public/uploads/products/...
-            Str::uuid().'.'.$file->getClientOriginalExtension(),
-            'public_uploads'
-        );
-
-        $relative = '/uploads/'.$path; // simpan path relatif
-        $product->image_url = $relative;
+        
+        // Path folder upload
+        $uploadPath = public_path('uploads/products');
+        if (!file_exists($uploadPath)) {
+            mkdir($uploadPath, 0755, true);
+        }
+        
+        // Generate filename unik
+        $filename = Str::uuid().'.'.$file->getClientOriginalExtension();
+        
+        // Upload file ke folder
+        $file->move($uploadPath, $filename);
+        
+        // Set permission file (opsional)
+        if (file_exists($uploadPath . '/' . $filename)) {
+            chmod($uploadPath . '/' . $filename, 0644);
+        }
+        
+        // ✅ PENTING: URL harus include /public/
+        $imageUrl = "/public/uploads/products/{$filename}";
+        
+        // Simpan ke database
+        $product->image_url = $imageUrl;
         $product->save();
-
-        return response()->json(['data' => [
-            'id' => $product->id,
-            'image_url' => $relative,
-        ]]);
+        
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'id' => $product->id,
+                'image_url' => $imageUrl,
+                'full_url' => url($imageUrl), // Full URL dengan domain
+            ]
+        ]);
     }
-
 
     public function search(Request $request)
     {
