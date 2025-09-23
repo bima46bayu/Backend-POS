@@ -6,6 +6,8 @@ use Illuminate\Http\Request;
 use App\Models\Product;
 use App\Http\Requests\StoreProductRequest;
 use App\Http\Requests\UpdateProductRequest;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 class ProductController extends Controller
 {
@@ -84,31 +86,28 @@ class ProductController extends Controller
     }
 
 
-    public function upload(Request $request, Product $product)
+    public function upload(Product $product, Request $request)
     {
         $request->validate([
-            'image' => 'required|image|mimes:jpg,jpeg,png,webp|max:2048',
+            'image' => ['required','image','mimes:jpg,jpeg,png,svg','max:5120'],
         ]);
 
-        // Hapus file lama (opsional, kalau disimpan di storage publik)
-        if ($product->image_url && str_starts_with($product->image_url, '/storage/')) {
-            $oldPath = str_replace('/storage/', '', $product->image_url);
-            Storage::disk('public')->delete($oldPath);
-        }
+        $file = $request->file('image');
 
-        // Simpan file -> storage/app/public/products/xxxx.jpg
-        $path = $request->file('image')->store('products', 'public');
+        $path = $file->storeAs(
+            'products', // -> public/uploads/products/...
+            Str::uuid().'.'.$file->getClientOriginalExtension(),
+            'public_uploads'
+        );
 
-        // Simpan URL publik ke DB
-        $product->update([
-            'image_url' => '/storage/' . $path,
-        ]);
+        $relative = '/uploads/'.$path; // simpan path relatif
+        $product->image_url = $relative;
+        $product->save();
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Gambar berhasil diupload',
-            'data'    => $product->fresh(),
-        ], 200);
+        return response()->json(['data' => [
+            'id' => $product->id,
+            'image_url' => $relative,
+        ]]);
     }
 
 

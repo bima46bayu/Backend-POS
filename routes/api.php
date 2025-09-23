@@ -113,6 +113,8 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::patch('/{product}',          [ProductController::class, 'update'])->whereNumber('product');
             Route::delete('/{product}',         [ProductController::class, 'destroy'])->whereNumber('product');
             Route::post('/{product}/upload',    [ProductController::class, 'upload'])->whereNumber('product');
+            Route::post('/products/{product}/upload', [ProductController::class, 'upload']);
+
 
             // Manual stock adjustment
             Route::post('/{product}/stock/change', [StockController::class,'change'])->whereNumber('product');
