@@ -8,6 +8,8 @@ use App\Http\Requests\StoreProductRequest;
 use App\Http\Requests\UpdateProductRequest;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Support\Arr;
+
 
 class ProductController extends Controller
 {
@@ -68,19 +70,26 @@ class ProductController extends Controller
     {
         $data = $request->validated();
 
+        // (opsional) pastikan nullable jadi null jika tidak ada/empty string
+        foreach (['description','category_id','sub_category_id'] as $k) {
+            if (!Arr::has($data, $k) || $data[$k] === '') {
+                $data[$k] = null;
+            }
+        }
 
+        // handle file image bila dikirim bareng update
         if ($request->hasFile('image')) {
             $data['image'] = $request->file('image')->store('products','public');
         }
 
-
         $product->update($data);
-        return response()->json($product);
-        }
 
+        // balikan konsisten (data wrapper opsional)
+        return response()->json(['data' => $product]);
+    }
 
-        public function destroy(Product $product)
-        {
+    public function destroy(Product $product)
+    {
         $product->delete();
         return response()->json(['message' => 'Product deleted']);
     }

@@ -19,6 +19,9 @@ class User extends Authenticatable
         'email',
         'password',
         'role',
+        'store_name',
+        'store_address',
+        'store_phone',
     ];
 
     /**
@@ -48,4 +51,5 @@ class User extends Authenticatable
     {
         return $this->role === 'kasir';
     }
+    
 }
