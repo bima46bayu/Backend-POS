@@ -12,6 +12,7 @@ use App\Http\Controllers\SubCategoryController;
 use App\Http\Controllers\PurchaseController;
 use App\Http\Controllers\PurchaseReceiveController;
 use App\Http\Controllers\GoodsReceiptController;
+use App\Http\Controllers\StoreLocationController;
 
 /*
 |--------------------------------------------------------------------------
@@ -30,6 +31,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/me',          [AuthController::class, 'me']);
     Route::put('/me/store',    [AuthController::class, 'updateStore']);
+
+    Route::get('/store-locations',        [StoreLocationController::class, 'index']);
+    Route::post('/store-locations',       [StoreLocationController::class, 'store']);
+    Route::get('/store-locations/{id}',   [StoreLocationController::class, 'show']);
+    Route::put('/store-locations/{id}',   [StoreLocationController::class, 'update']);
+    Route::delete('/store-locations/{id}',[StoreLocationController::class, 'destroy']);
 
     // ---------- READ-ONLY umum ----------
     Route::prefix('categories')->group(function () {

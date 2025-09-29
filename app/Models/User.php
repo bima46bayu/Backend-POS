@@ -19,9 +19,7 @@ class User extends Authenticatable
         'email',
         'password',
         'role',
-        'store_name',
-        'store_address',
-        'store_phone',
+        'store_location_id',   // ← ganti: pakai FK, bukan store_name/address/phone
     ];
 
     /**
@@ -40,6 +38,20 @@ class User extends Authenticatable
     ];
 
     /**
+     * (Opsional) Auto eager-load relasi agar FE selalu dapat storeLocation
+     * Bisa kamu aktifkan kalau ingin /auth/me langsung include relasi tanpa ->load()
+     */
+    // protected $with = ['storeLocation'];
+
+    /**
+     * Relasi ke lokasi toko
+     */
+    public function storeLocation()
+    {
+        return $this->belongsTo(StoreLocation::class);
+    }
+
+    /**
      * Helper untuk cek role
      */
     public function isAdmin(): bool
@@ -51,5 +63,4 @@ class User extends Authenticatable
     {
         return $this->role === 'kasir';
     }
-    
 }

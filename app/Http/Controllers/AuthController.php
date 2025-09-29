@@ -6,33 +6,29 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
 use App\Models\User;
+use App\Models\StoreLocation;
 
 class AuthController extends Controller
 {
     public function register(Request $request)
     {
         $validated = $request->validate([
-            'name'          => 'required|string|max:100',
-            'email'         => 'required|email|unique:users',
-            'password'      => 'required|min:6|confirmed',
-            'role'          => 'in:admin,kasir',
-            // store fields (opsional)
-            'store_name'    => 'nullable|string|max:150',
-            'store_address' => 'nullable|string|max:255',
-            'store_phone'   => 'nullable|string|max:50',
+            'name'              => 'required|string|max:100',
+            'email'             => 'required|email|unique:users,email',
+            'password'          => 'required|min:6|confirmed',
+            'role'              => 'in:admin,kasir',
+            'store_location_id' => 'nullable|exists:store_locations,id', // relasi baru
         ]);
 
         $user = User::create([
-            'name'          => $validated['name'],
-            'email'         => $validated['email'],
-            'password'      => Hash::make($validated['password']),
-            'role'          => $validated['role'] ?? 'kasir',
-            'store_name'    => $validated['store_name']    ?? null,
-            'store_address' => $validated['store_address'] ?? null,
-            'store_phone'   => $validated['store_phone']   ?? null,
+            'name'              => $validated['name'],
+            'email'             => $validated['email'],
+            'password'          => Hash::make($validated['password']),
+            'role'              => $validated['role'] ?? 'kasir',
+            'store_location_id' => $validated['store_location_id'] ?? null,
         ]);
 
-        // jangan kirim password ke FE
+        $user->load('storeLocation');                 // ← include relasi untuk FE
         $user->makeHidden(['password', 'remember_token']);
 
         return response()->json(['user' => $user], 201);
@@ -47,7 +43,7 @@ class AuthController extends Controller
 
         $user = User::where('email', $request->email)->first();
 
-        if (! $user || ! Hash::check($request->password, $user->password)) {
+        if (!$user || !Hash::check($request->password, $user->password)) {
             throw ValidationException::withMessages([
                 'email' => ['The provided credentials are incorrect.'],
             ]);
@@ -55,6 +51,7 @@ class AuthController extends Controller
 
         $token = $user->createToken('api-token')->plainTextToken;
 
+        $user->load('storeLocation');                 // ← include relasi
         $user->makeHidden(['password', 'remember_token']);
 
         return response()->json([
@@ -66,65 +63,43 @@ class AuthController extends Controller
     public function logout(Request $request)
     {
         $request->user()->tokens()->delete();
-
         return response()->json(['message' => 'Logged out']);
     }
 
     /**
-     * Profil user aktif (dipakai oleh FE / ReceiptTicket untuk ambil store).
-     * GET /api/me (auth)
+     * Profil user aktif (dipakai FE/ReceiptTicket).
+     * GET /api/me (auth:sanctum)
      */
     public function me(Request $request)
     {
-        $u = $request->user();
-        $u->makeHidden(['password', 'remember_token']);
+        $u = $request->user()->load('storeLocation');
 
-        // Kamu bisa kirim langsung user atau bungkus dengan shape khusus.
-        // Di bawah ini aku kirim bentuk yang enak untuk FE:
-        return response()->json([
-            'data' => [
-                'id'    => $u->id,
-                'name'  => $u->name,
-                'email' => $u->email,
-                'role'  => $u->role,
-                'store' => [
-                    'name'    => $u->store_name,
-                    'address' => $u->store_address,
-                    'phone'   => $u->store_phone,
-                ],
-            ],
-        ]);
+        // Kembalikan shape yang ramah FE (langsung kirim objek relasi)
+        $u->makeHidden(['password', 'remember_token']);
+        return response()->json($u);
     }
 
     /**
-     * Update store milik user aktif.
-     * PUT /api/me/store (auth)
-     * body: { name?, address?, phone? }
+     * Ganti store location milik user aktif (pindah cabang).
+     * PUT /api/me/store (auth:sanctum)
+     * body: { store_location_id: number|null }
      */
     public function updateStore(Request $request)
     {
-        $u = $request->user();
-
         $data = $request->validate([
-            'name'    => ['nullable', 'string', 'max:150'],
-            'address' => ['nullable', 'string', 'max:255'],
-            'phone'   => ['nullable', 'string', 'max:50'],
+            'store_location_id' => ['nullable', 'exists:store_locations,id'],
         ]);
 
-        $u->store_name    = $data['name']    ?? $u->store_name;
-        $u->store_address = $data['address'] ?? $u->store_address;
-        $u->store_phone   = $data['phone']   ?? $u->store_phone;
+        $u = $request->user();
+        $u->store_location_id = $data['store_location_id'] ?? null;
         $u->save();
 
+        $u->load('storeLocation');
+        $u->makeHidden(['password', 'remember_token']);
+
         return response()->json([
-            'message' => 'Store profile updated',
-            'data' => [
-                'store' => [
-                    'name'    => $u->store_name,
-                    'address' => $u->store_address,
-                    'phone'   => $u->store_phone,
-                ],
-            ],
+            'message' => 'Store location updated',
+            'user'    => $u,
         ]);
     }
 }
