@@ -17,6 +17,10 @@ class ProductController extends Controller
     {
         $query = Product::query();
 
+        // ✅ TAMBAHKAN INI - Exact match untuk parameter sku
+        if ($request->has('sku')) {
+            $query->where('sku', '=', $request->sku);
+        }
 
         if ($request->has('search')) {
         $query->where(function ($q) use ($request) {
