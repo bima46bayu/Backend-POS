@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
 use App\Models\User;
 use App\Models\StoreLocation;
+use Carbon\Carbon;
 
 class AuthController extends Controller
 {
@@ -17,7 +18,7 @@ class AuthController extends Controller
             'email'             => 'required|email|unique:users,email',
             'password'          => 'required|min:6|confirmed',
             'role'              => 'in:admin,kasir',
-            'store_location_id' => 'nullable|exists:store_locations,id', // relasi baru
+            'store_location_id' => 'nullable|exists:store_locations,id',
         ]);
 
         $user = User::create([
@@ -28,7 +29,7 @@ class AuthController extends Controller
             'store_location_id' => $validated['store_location_id'] ?? null,
         ]);
 
-        $user->load('storeLocation');                 // ← include relasi untuk FE
+        $user->load('storeLocation');
         $user->makeHidden(['password', 'remember_token']);
 
         return response()->json(['user' => $user], 201);
@@ -49,14 +50,25 @@ class AuthController extends Controller
             ]);
         }
 
-        $token = $user->createToken('api-token')->plainTextToken;
+        // Hapus semua token lama user ini
+        $user->tokens()->delete();
 
-        $user->load('storeLocation');                 // ← include relasi
+        // Hitung waktu expire: akhir hari ini (23:59:59)
+        $expiresAt = Carbon::now()->addMinute();
+        
+        // OPSI 2: Atau expire besok jam 00:00 (lebih clean)
+        // $expiresAt = Carbon::tomorrow()->startOfDay();
+
+        // Buat token dengan expiration
+        $token = $user->createToken('api-token', ['*'], $expiresAt)->plainTextToken;
+
+        $user->load('storeLocation');
         $user->makeHidden(['password', 'remember_token']);
 
         return response()->json([
-            'user'  => $user,
-            'token' => $token,
+            'user'       => $user,
+            'token'      => $token,
+            'expires_at' => $expiresAt->toDateTimeString(), // Info untuk frontend
         ]);
     }
 
@@ -73,8 +85,6 @@ class AuthController extends Controller
     public function me(Request $request)
     {
         $u = $request->user()->load('storeLocation');
-
-        // Kembalikan shape yang ramah FE (langsung kirim objek relasi)
         $u->makeHidden(['password', 'remember_token']);
         return response()->json($u);
     }
