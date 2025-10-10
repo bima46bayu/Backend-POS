@@ -10,85 +10,136 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Support\Arr;
 
-
 class ProductController extends Controller
 {
+    /**
+     * GET /api/products
+     * Query params (opsional):
+     * - search: string (cari di name/sku)
+     * - sku: string (exact)
+     * - category_id: int|array
+     * - sub_category_id: int|array
+     * - min_price, max_price: numeric
+     * - sort: one of [id,name,sku,price,updated_at,created_at]
+     * - dir: asc|desc
+     * - page, per_page (default 10, max 100)
+     *
+     * Response (dinormalisasi):
+     * { items: [...], meta: { current_page, per_page, last_page, total }, links: { next, prev } }
+     */
     public function index(Request $request)
     {
-        $query = Product::query();
+        $perPage = (int) ($request->input('per_page', 10));
+        $perPage = $perPage > 100 ? 100 : ($perPage < 1 ? 10 : $perPage);
 
-        // ✅ TAMBAHKAN INI - Exact match untuk parameter sku
-        if ($request->has('sku')) {
-            $query->where('sku', '=', $request->sku);
+        $sort     = (string) $request->input('sort', 'id');
+        $dir      = strtolower((string) $request->input('dir', 'asc')) === 'desc' ? 'desc' : 'asc';
+        $allowedSorts = ['id','name','sku','price','updated_at','created_at'];
+        if (!in_array($sort, $allowedSorts, true)) {
+            $sort = 'id';
         }
 
-        if ($request->has('search')) {
-        $query->where(function ($q) use ($request) {
-            $q->where('name','like','%'.$request->search.'%')
-            ->orWhere('sku','like','%'.$request->search.'%');
-        });
-        }
+        // siapkan nilai filter
+        $search        = trim((string) $request->input('search', ''));
+        $skuExact      = trim((string) $request->input('sku', ''));
+        $categoryId    = $request->input('category_id');     // int | array
+        $subCategoryId = $request->input('sub_category_id'); // int | array
+        $minPrice      = $request->input('min_price');
+        $maxPrice      = $request->input('max_price');
 
+        $q = Product::query()
+            ->select([
+                'id',
+                'category_id',
+                'sub_category_id',
+                'sku',
+                'name',
+                'description',
+                'price',
+                'stock',
+                'image_url',
+                'created_at',
+                'updated_at',
+            ])
+            // exact SKU cepat
+            ->when($skuExact !== '', fn($qq) => $qq->where('sku', '=', $skuExact))
+            // search di name/sku
+            ->when($search !== '', function ($qq) use ($search) {
+                $qq->where(function ($w) use ($search) {
+                    $w->where('name', 'like', "%{$search}%")
+                      ->orWhere('sku',  'like', "%{$search}%");
+                });
+            })
+            // category filter (single/array)
+            ->when($categoryId, function ($qq) use ($categoryId) {
+                is_array($categoryId)
+                    ? $qq->whereIn('category_id', array_filter($categoryId))
+                    : $qq->where('category_id', $categoryId);
+            })
+            // sub category filter (single/array)
+            ->when($subCategoryId, function ($qq) use ($subCategoryId) {
+                is_array($subCategoryId)
+                    ? $qq->whereIn('sub_category_id', array_filter($subCategoryId))
+                    : $qq->where('sub_category_id', $subCategoryId);
+            })
+            // price range
+            ->when($minPrice !== null && $minPrice !== '', fn($qq) => $qq->where('price', '>=', (float) $minPrice))
+            ->when($maxPrice !== null && $maxPrice !== '', fn($qq) => $qq->where('price', '<=', (float) $maxPrice))
+            // sorting
+            ->orderBy($sort, $dir);
 
-        if ($request->has('category_id')) {
-        $query->where('category_id', $request->category_id);
-        }
+        $p = $q->paginate($perPage)->appends($request->query());
 
-
-        if ($request->has('min_price')) {
-            $query->where('price','>=',$request->min_price);
-        }
-
-        
-        if ($request->has('max_price')) {
-            $query->where('price','<=',$request->max_price);
-        }
-
-
-        return $query->orderBy('id', 'asc')->get();
+        return response()->json([
+            'items' => $p->items(),
+            'meta'  => [
+                'current_page' => $p->currentPage(),
+                'per_page'     => $p->perPage(),
+                'last_page'    => $p->lastPage(),
+                'total'        => $p->total(),
+            ],
+            'links' => [
+                'next' => $p->nextPageUrl(),
+                'prev' => $p->previousPageUrl(),
+            ],
+        ]);
     }
-
 
     public function store(StoreProductRequest $request)
     {
         $data = $request->validated();
 
-
         if ($request->hasFile('image')) {
+            // pakai Storage biar konsisten
             $data['image'] = $request->file('image')->store('products','public');
         }
 
-
         $product = Product::create($data);
-        return response()->json($product,201);
-        }
-
-
-        public function show(Product $product)
-        {
-        return response()->json($product);
+        return response()->json($product, 201);
     }
 
+    public function show(Product $product)
+    {
+        return response()->json($product);
+    }
 
     public function update(UpdateProductRequest $request, Product $product)
     {
         $data = $request->validated();
 
-        // (opsional) pastikan nullable jadi null jika tidak ada/empty string
+        // normalisasi nullable
         foreach (['description','category_id','sub_category_id'] as $k) {
             if (!Arr::has($data, $k) || $data[$k] === '') {
                 $data[$k] = null;
             }
         }
 
-        // handle file image bila dikirim bareng update
         if ($request->hasFile('image')) {
             $data['image'] = $request->file('image')->store('products','public');
         }
 
         $product->update($data);
 
-        // balikan konsisten (data wrapper opsional)
         return response()->json(['data' => $product]);
     }
 
@@ -100,43 +151,34 @@ class ProductController extends Controller
 
     public function upload(Product $product, Request $request)
     {
-        // Validasi file
         $request->validate([
             'image' => ['required','image','mimes:jpg,jpeg,png,svg','max:5120'],
         ]);
-        
+
         $file = $request->file('image');
-        
-        // Path folder upload
+
         $uploadPath = public_path('uploads/products');
         if (!file_exists($uploadPath)) {
             mkdir($uploadPath, 0755, true);
         }
-        
-        // Generate filename unik
+
         $filename = Str::uuid().'.'.$file->getClientOriginalExtension();
-        
-        // Upload file ke folder
         $file->move($uploadPath, $filename);
-        
-        // Set permission file (opsional)
+
         if (file_exists($uploadPath . '/' . $filename)) {
             chmod($uploadPath . '/' . $filename, 0644);
         }
-        
-        // ✅ PENTING: URL harus include /public/
+
         $imageUrl = "/public/uploads/products/{$filename}";
-        
-        // Simpan ke database
         $product->image_url = $imageUrl;
         $product->save();
-        
+
         return response()->json([
             'success' => true,
             'data' => [
                 'id' => $product->id,
                 'image_url' => $imageUrl,
-                'full_url' => url($imageUrl), // Full URL dengan domain
+                'full_url' => url($imageUrl),
             ]
         ]);
     }

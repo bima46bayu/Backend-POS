@@ -14,22 +14,55 @@ use Illuminate\Support\Facades\Auth;
 
 class SaleController extends Controller
 {
-    public function index(Request $request)
+// app/Http/Controllers/SalesController.php
+    public function index(Request $r)
     {
-        $q = Sale::with(['items.product','cashier','payments'])->latest();
+        $q = \App\Models\Sale::with(['items.product','cashier.storeLocation','payments'])
+            ->latest('id');
 
-        if ($request->filled('code')) {
-            $q->where('code','like','%'.$request->code.'%');
+        if ($r->filled('code')) {
+            $q->where('code','like','%'.$r->code.'%');
         }
-        if ($request->filled('cashier_id')) {
-            $q->where('cashier_id', $request->cashier_id);
+        if ($r->filled('cashier_id')) {
+            $q->where('cashier_id', $r->cashier_id);
         }
-        if ($request->filled('status')) {
-            $q->where('status',$request->status);
+        if ($r->filled('status')) {
+            $q->where('status', $r->status);
         }
 
-        return response()->json($q->paginate(20));
+        // filter tanggal (created_at)
+        if ($r->filled('from')) {
+            $q->whereDate('created_at','>=',$r->from);
+        }
+        if ($r->filled('to')) {
+            $q->whereDate('created_at','<=',$r->to);
+        }
+
+        // filter cabang via relasi cashier->store_location_id
+        if ($r->filled('store_location_id')) {
+            $storeId = $r->store_location_id;
+            $q->whereHas('cashier', function($qq) use ($storeId) {
+                $qq->where('store_location_id', $storeId);
+            });
+        }
+
+        // hanya transaksi yang ada diskonnya (di header ATAU item)
+        if ($r->boolean('only_discount')) {
+            $q->where(function($qq){
+                $qq->where('discount', '>', 0)
+                ->orWhereHas('items', function($qi){
+                    $qi->where('discount_nominal','>',0);
+                });
+            });
+        }
+
+        // izinkan per_page, tapi batasi agar aman
+        $perPage = (int) ($r->per_page ?? 10);
+        $perPage = max(1, min(50000, $perPage));
+
+        return response()->json($q->paginate($perPage));
     }
+
 
     public function show(Sale $sale)
     {
