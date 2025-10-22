@@ -13,6 +13,7 @@ use App\Http\Controllers\PurchaseController;
 use App\Http\Controllers\PurchaseReceiveController;
 use App\Http\Controllers\GoodsReceiptController;
 use App\Http\Controllers\StoreLocationController;
+use App\Http\Controllers\InventoryController;
 
 /*
 |--------------------------------------------------------------------------
@@ -37,6 +38,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/store-locations/{id}',   [StoreLocationController::class, 'show']);
     Route::put('/store-locations/{id}',   [StoreLocationController::class, 'update']);
     Route::delete('/store-locations/{id}',[StoreLocationController::class, 'destroy']);
+
+    Route::get('/inventory/layers',       [InventoryController::class, 'layers']);       // ?product_id=&store_id=&per_page=
+    Route::get('/inventory/consumptions', [InventoryController::class, 'consumptions']); // ?product_id=&sale_id=&per_page=
+    Route::get('/inventory/valuation',    [InventoryController::class, 'valuation']);    // nilai persediaan (on-hand x cost)
+    Route::get('/sales/{sale}/fifo-breakdown', [SaleController::class, 'fifoBreakdown'])->whereNumber('sale');
 
     // ---------- READ-ONLY umum ----------
     Route::prefix('categories')->group(function () {
@@ -138,5 +144,10 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Sales — void
         Route::post('sales/{sale}/void',        [SaleController::class, 'void'])->whereNumber('sale');
+
+        //stock_log new
+        Route::get('/inventory/products', [InventoryController::class, 'inventoryProducts']);
+        Route::get('/inventory/products/{id}/logs', [InventoryController::class, 'productLogs']);
+        Route::get('/inventory/products/{id}/summary', [InventoryController::class, 'productSummary']);
     });
 });
