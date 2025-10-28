@@ -5,23 +5,64 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\Product;
 use App\Http\Requests\UpdateProductRequest;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Support\Arr;
-use App\Support\InventoryQuick;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\File;
 use Illuminate\Database\QueryException;
+use Illuminate\Http\UploadedFile;
 
 class ProductController extends Controller
 {
     /**
+     * Simpan file ke public/uploads/products dan
+     * KEMBALIKAN path relatif: /public/uploads/products/<uuid>.<ext>
+     */
+    private function putPublicProductImage(UploadedFile $file): string
+    {
+        $ext  = strtolower($file->getClientOriginalExtension() ?: 'png');
+        $name = Str::uuid().'.'.$ext;
+
+        // Target folder di webroot: public_html/public/uploads/products
+        $targetDir = public_path('uploads/products');
+
+        // Buat folder jika belum ada
+        if (!File::exists($targetDir)) {
+            File::makeDirectory($targetDir, 0755, true);
+        }
+
+        // Pastikan writable
+        if (!is_writable($targetDir)) {
+            throw new \RuntimeException("Upload directory is not writable: {$targetDir}");
+        }
+
+        // Pindahkan file ke folder target
+        $file->move($targetDir, $name);
+
+        // Kembalikan path relatif persis seperti yang kamu minta
+        return '/public/uploads/products/'.$name;
+    }
+
+    /**
+     * Hapus file lama jika path/URL mengarah ke public/uploads/products
+     */
+    private function tryDeletePublicProductImage(?string $value): void
+    {
+        if (!$value) return;
+
+        // Bisa URL penuh atau path relatif
+        $path = parse_url($value, PHP_URL_PATH) ?: $value;
+        if (!$path) return;
+
+        $candidate = public_path(ltrim($path, '/')); // map ke filesystem
+        if (File::exists($candidate)) {
+            @File::delete($candidate);
+        }
+    }
+
+    /**
      * GET /api/products
-     * Query params:
-     * - search, sku, category_id, sub_category_id, min_price, max_price
-     * - sort=[id,name,sku,price,updated_at,created_at], dir=asc|desc
-     * - page, per_page
      */
     public function index(Request $request)
     {
@@ -42,23 +83,14 @@ class ProductController extends Controller
 
         $q = Product::query()
             ->select([
-                'id',
-                'category_id',
-                'sub_category_id',
-                'sku',
-                'name',
-                'description',
-                'price',
-                'stock',
-                'image_url',
-                'created_at',
-                'updated_at',
+                'id','category_id','sub_category_id','sku','name','description',
+                'price','stock','image_url','created_at','updated_at',
             ])
             ->when($skuExact !== '', fn($qq) => $qq->where('sku', $skuExact))
             ->when($search !== '', function ($qq) use ($search) {
                 $qq->where(function ($w) use ($search) {
-                    $w->where('name', 'like', "%{$search}%")
-                      ->orWhere('sku',  'like', "%{$search}%");
+                    $w->where('name','like',"%{$search}%")
+                      ->orWhere('sku','like',"%{$search}%");
                 });
             })
             ->when($categoryId, function ($qq) use ($categoryId) {
@@ -71,8 +103,8 @@ class ProductController extends Controller
                     ? $qq->whereIn('sub_category_id', array_filter($subCategoryId))
                     : $qq->where('sub_category_id', $subCategoryId);
             })
-            ->when($minPrice !== null && $minPrice !== '', fn($qq) => $qq->where('price', '>=', (float) $minPrice))
-            ->when($maxPrice !== null && $maxPrice !== '', fn($qq) => $qq->where('price', '<=', (float) $maxPrice))
+            ->when($minPrice !== null && $minPrice !== '', fn($qq) => $qq->where('price','>=',(float)$minPrice))
+            ->when($maxPrice !== null && $maxPrice !== '', fn($qq) => $qq->where('price','<=',(float)$maxPrice))
             ->orderBy($sort, $dir);
 
         $p = $q->paginate($perPage)->appends($request->query());
@@ -102,21 +134,19 @@ class ProductController extends Controller
             'category_id'     => 'nullable|integer',
             'sub_category_id' => 'nullable|integer',
             'description'     => 'nullable|string',
-            'image'           => 'sometimes|file|image|mimes:jpg,jpeg,png,webp,svg|max:5120',
+            // pakai mimes agar SVG boleh (rule 'image' tidak meloloskan svg)
+            'image'           => 'sometimes|file|mimes:jpg,jpeg,png,webp,svg,svg+xml|max:5120',
         ]);
 
         try {
             return DB::transaction(function () use ($req, $data) {
-                // simpan foto (opsional)
-                $imageUrl = null;
+                // 1) Simpan foto (opsional) → path relatif
+                $imagePath = null;
                 if ($req->hasFile('image')) {
-                    $file = $req->file('image');
-                    $filename = \Illuminate\Support\Str::uuid().'.'.$file->getClientOriginalExtension();
-                    $path = $file->storeAs('products', $filename, 'public');
-                    $imageUrl = \Illuminate\Support\Facades\Storage::disk('public')->url($path);
+                    $imagePath = $this->putPublicProductImage($req->file('image'));
                 }
 
-                // buat produk
+                // 2) Buat produk
                 $productId = DB::table('products')->insertGetId([
                     'sku'             => $data['sku'] ?? null,
                     'name'            => $data['name'],
@@ -124,84 +154,77 @@ class ProductController extends Controller
                     'category_id'     => $data['category_id'] ?? null,
                     'sub_category_id' => $data['sub_category_id'] ?? null,
                     'description'     => $data['description'] ?? null,
-                    'image_url'       => $imageUrl,
+                    'image_url'       => $imagePath,   // simpan path relatif
                     'stock'           => 0,
                     'created_at'      => now(),
                     'updated_at'      => now(),
                 ]);
 
-                // stok awal → bikin layer minimal
+                // 3) Stok awal → bikin layer inbound + catat ledger "ADD"
                 $initQty = (float)($data['stock'] ?? 0);
                 if ($initQty > 0) {
+                    // buat layer inbound (helper kamu)
                     \App\Support\InventoryQuick::addInboundLayer([
                         'product_id' => $productId,
                         'qty'        => $initQty,
-                        // tidak kirim unit_cost & store_location_id
                         'note'       => 'Stok awal (product store)',
-                        // sesuai aturan kamu: layer ADD = GR tanpa source_id
-                        // biarkan helper men-set defaultnya; kita hanya membaca sebagai GR+NULL di bawah
                     ]);
 
-                    // === LEDGER IN (ADD) dari layer GR tanpa source_id ===
                     if (Schema::hasTable('stock_ledger')) {
-                        // Coba cari layer terakhir: source_type='gr' AND source_id IS NULL
-                        $layerId = DB::table('inventory_layers')
+                        // --- Ambil layer TERBARU untuk product ini (tanpa asumsi source_type/source_id)
+                        $layer = DB::table('inventory_layers')
                             ->where('product_id', $productId)
-                            ->where(function($q){
-                                $q->where(function($w){
-                                    $w->where('source_type','gr')->whereNull('source_id');
-                                })
-                                // fallback kalau helper tidak set source_type sama sekali
-                                ->orWhere(function($w){
-                                    $w->whereNull('source_type')->whereNull('source_id');
-                                });
-                            })
                             ->orderByDesc('id')
-                            ->value('id');
+                            ->first();
 
-                        if ($layerId) {
-                            // fallback nama kolom qty & cost
-                            $qtyCol  = Schema::hasColumn('inventory_layers','qty') ? 'qty'
-                                     : (Schema::hasColumn('inventory_layers','qty_initial') ? 'qty_initial'
-                                     : (Schema::hasColumn('inventory_layers','qty_remaining') ? 'qty_remaining' : null));
+                        // Tentukan kolom qty & cost yang tersedia di inventory_layers
+                        $qtyCol  = Schema::hasColumn('inventory_layers','qty')               ? 'qty'
+                                : (Schema::hasColumn('inventory_layers','qty_initial')      ? 'qty_initial'
+                                : (Schema::hasColumn('inventory_layers','qty_remaining')    ? 'qty_remaining' : null));
 
-                            $costCol = Schema::hasColumn('inventory_layers','unit_landed_cost') ? 'unit_landed_cost'
-                                     : (Schema::hasColumn('inventory_layers','unit_cost')       ? 'unit_cost'
-                                     : (Schema::hasColumn('inventory_layers','unit_price')      ? 'unit_price' : null));
+                        $costCol = Schema::hasColumn('inventory_layers','unit_landed_cost')  ? 'unit_landed_cost'
+                                : (Schema::hasColumn('inventory_layers','unit_cost')        ? 'unit_cost'
+                                : (Schema::hasColumn('inventory_layers','unit_price')       ? 'unit_price' : null));
 
-                            $select = 'id, product_id, store_location_id';
-                            $select .= $qtyCol  ? ", {$qtyCol} as q" : ", 0 as q";
-                            $select .= $costCol ? ", {$costCol} as c" : ", 0 as c";
+                        // Nilai default ledger
+                        $qVal = $initQty;
+                        $cVal = 0.0;
+                        $storeLocId = null;
+                        $layerIdForLedger = null;
 
-                            $L = DB::table('inventory_layers')->selectRaw($select)->where('id', $layerId)->first();
+                        if ($layer) {
+                            $storeLocId = $layer->store_location_id ?? null;
+                            $layerIdForLedger = $layer->id ?? null;
 
-                            if ($L) {
-                                $qVal = (float)$L->q ?: (float)$initQty;
-                                $cVal = (float)$L->c; // kalau 0 pun dicatat apa adanya
-
-                                DB::table('stock_ledger')->insert([
-                                    'product_id'        => (int)$L->product_id,
-                                    'store_location_id' => $L->store_location_id ? (int)$L->store_location_id : null,
-                                    'layer_id'          => (int)$layerId,
-                                    'user_id'           => auth()->id(),
-                                    'ref_type'          => 'ADD',      // catat sebagai ADD
-                                    'ref_id'            => null,       // ADD tidak punya dokumen sumber
-                                    'direction'         => +1,         // IN
-                                    'qty'               => $qVal,
-                                    'unit_cost'         => $cVal,
-                                    'unit_price'        => null,
-                                    'subtotal_cost'     => $qVal * $cVal,
-                                    'note'              => 'Stok awal (product store)',
-                                    'created_at'        => now(),
-                                    'updated_at'        => now(),
-                                ]);
+                            if ($qtyCol && isset($layer->{$qtyCol})) {
+                                $qVal = (float)$layer->{$qtyCol} ?: $initQty;
+                            }
+                            if ($costCol && isset($layer->{$costCol})) {
+                                $cVal = (float)$layer->{$costCol};
                             }
                         }
+
+                        // Insert ke stock_ledger — tetap jalan meski layer tidak ketemu (layer_id null)
+                        DB::table('stock_ledger')->insert([
+                            'product_id'        => (int)$productId,
+                            'store_location_id' => $storeLocId ? (int)$storeLocId : null,
+                            'layer_id'          => $layerIdForLedger ? (int)$layerIdForLedger : null, // pastikan nullable di DB
+                            'user_id'           => auth()->id() ?: null, // pastikan kolom nullable jika perlu
+                            'ref_type'          => 'ADD',
+                            'ref_id'            => null,
+                            'direction'         => +1,
+                            'qty'               => $qVal,
+                            'unit_cost'         => $cVal,
+                            'unit_price'        => null,
+                            'subtotal_cost'     => $qVal * $cVal,
+                            'note'              => 'Stok awal (product store)',
+                            'created_at'        => now(),
+                            'updated_at'        => now(),
+                        ]);
                     }
-                    // === END LEDGER IN (ADD) ===
                 }
 
-                // recalc dari layers (extra safety)
+                // 4) Recalc dari layers (extra safety)
                 $sumRemain = (float) DB::table('inventory_layers')
                     ->where('product_id', $productId)
                     ->sum('qty_remaining');
@@ -222,6 +245,7 @@ class ProductController extends Controller
         }
     }
 
+
     public function show(Product $product)
     {
         return response()->json($product);
@@ -236,18 +260,15 @@ class ProductController extends Controller
             if (!Arr::has($data, $k) || $data[$k] === '') $data[$k] = null;
         }
 
-        // upload file (gunakan storage 'public' agar url bisa diakses via /storage)
+        // upload file ke jalur public (boleh svg)
         if ($request->hasFile('image')) {
-            $request->validate(['image' => ['image','mimes:jpg,jpeg,png,svg','max:5120']]);
+            $request->validate(['image' => ['file','mimes:jpg,jpeg,png,webp,svg,svg+xml','max:5120']]);
 
-            $file = $request->file('image');
-            $filename = Str::uuid().'.'.$file->getClientOriginalExtension();
+            // hapus file lama (opsional)
+            $this->tryDeletePublicProductImage($product->image_url);
 
-            // simpan ke storage/app/public/products/{filename}
-            $path = $file->storeAs('products', $filename, 'public');
-            $imageUrl = Storage::disk('public')->url($path); // biasanya /storage/products/{filename}
-
-            $data['image_url'] = $imageUrl;
+            // simpan baru → path relatif
+            $data['image_url'] = $this->putPublicProductImage($request->file('image'));
         }
 
         $product->update($data);
@@ -259,16 +280,13 @@ class ProductController extends Controller
     {
         try {
             return DB::transaction(function () use ($product) {
-
                 // ====== NOLKAN STOK SEBELUM DELETE ======
                 if (Schema::hasTable('inventory_layers')) {
-                    // Ambil semua layer yang masih ada qty_remaining
                     $layers = DB::table('inventory_layers')
                         ->where('product_id', $product->id)
                         ->where('qty_remaining', '>', 0)
                         ->lockForUpdate()
                         ->get(['id','qty_remaining',
-                            // cost fallback columns (ambil jika ada)
                             (Schema::hasColumn('inventory_layers','unit_landed_cost') ? 'unit_landed_cost' : DB::raw('0 as unit_landed_cost')),
                             (Schema::hasColumn('inventory_layers','unit_cost')        ? 'unit_cost'        : DB::raw('0 as unit_cost')),
                             (Schema::hasColumn('inventory_layers','unit_price')       ? 'unit_price'       : DB::raw('0 as unit_price')),
@@ -282,13 +300,11 @@ class ProductController extends Controller
                         $qtyOut = (float)$L->qty_remaining;
                         if ($qtyOut <= 0) continue;
 
-                        // Hitung unit_cost fallback dari layer (tanpa konsumptions)
                         $unitCost = 0.0;
                         if (Schema::hasColumn('inventory_layers','unit_landed_cost')) $unitCost = (float)$L->unit_landed_cost;
                         if ($unitCost == 0.0 && Schema::hasColumn('inventory_layers','unit_cost'))  $unitCost = (float)$L->unit_cost;
                         if ($unitCost == 0.0 && Schema::hasColumn('inventory_layers','unit_price')) $unitCost = (float)$L->unit_price;
 
-                        // Catat untuk ledger OUT
                         $ledgerRows[] = (object)[
                             'layer_id'          => (int)$L->id,
                             'qty'               => $qtyOut,
@@ -298,21 +314,18 @@ class ProductController extends Controller
 
                         $totalOut += $qtyOut;
 
-                        // Set qty_remaining layer -> 0
                         DB::table('inventory_layers')->where('id', $L->id)->update([
                             'qty_remaining' => 0,
                             'updated_at'    => now(),
                         ]);
                     }
 
-                    // Turunkan counter stok produk ke 0
                     if ($totalOut > 0) {
                         DB::table('products')->where('id', $product->id)->update([
                             'stock'      => 0,
                             'updated_at' => now(),
                         ]);
 
-                        // StockLog (legacy) sekali saja
                         DB::table('stock_logs')->insert([
                             'product_id'  => $product->id,
                             'user_id'     => auth()->id(),
@@ -323,7 +336,6 @@ class ProductController extends Controller
                             'updated_at'  => now(),
                         ]);
 
-                        // Ledger OUT per layer (jika tabel ada)
                         if (Schema::hasTable('stock_ledger')) {
                             foreach ($ledgerRows as $row) {
                                 DB::table('stock_ledger')->insert([
@@ -333,7 +345,7 @@ class ProductController extends Controller
                                     'user_id'           => auth()->id(),
                                     'ref_type'          => 'DESTROY',
                                     'ref_id'            => null,
-                                    'direction'         => -1, // OUT
+                                    'direction'         => -1,
                                     'qty'               => $row->qty,
                                     'unit_cost'         => $row->unit_cost,
                                     'unit_price'        => null,
@@ -346,7 +358,6 @@ class ProductController extends Controller
                         }
                     }
                 } else {
-                    // Kalau tabel layers tidak ada, minimal set counter product ke 0
                     DB::table('products')->where('id', $product->id)->update([
                         'stock'      => 0,
                         'updated_at' => now(),
@@ -362,9 +373,11 @@ class ProductController extends Controller
                         'updated_at'  => now(),
                     ]);
                 }
-                // ====== END NOLKAN STOK ======
 
-                // Hard delete seperti semula
+                // Hapus file gambar (opsional) — sesuai path relatif
+                $this->tryDeletePublicProductImage($product->image_url);
+
+                // Hard delete
                 $product->forceDelete();
 
                 return response()->json(['message' => 'Product permanently deleted'], 200);
@@ -373,57 +386,44 @@ class ProductController extends Controller
         } catch (QueryException $e) {
             $isFk = ($e->getCode() === '23000') || str_contains($e->getMessage(), '1451');
 
+            if ($isFk && Schema::hasColumn('products', 'deleted_at')) {
+                DB::table('products')->where('id', $product->id)->update(['deleted_at' => now()]);
+                return response()->json(['message' => 'Product archived'], 200);
+            }
+
             if ($isFk) {
-                if (Schema::hasColumn('products', 'deleted_at')) {
-                    DB::table('products')
-                        ->where('id', $product->id)
-                        ->update(['deleted_at' => now()]);
-
-                    return response()->json(['message' => 'Product archived'], 200);
-                }
-
                 return response()->json([
-                    'message' => 'Produk dipakai transaksi sehingga tidak bisa dihapus permanen. ' .
-                                'Aktifkan soft delete (tambah kolom deleted_at) untuk mengarsipkan.',
+                    'message' => 'Produk dipakai transaksi sehingga tidak bisa dihapus permanen. Aktifkan soft delete (tambah kolom deleted_at) untuk mengarsipkan.',
                 ], 409);
             }
 
-            return response()->json([
-                'message' => 'Delete failed',
-                'error'   => $e->getMessage(),
-            ], 500);
+            return response()->json(['message' => 'Delete failed','error'=>$e->getMessage()], 500);
 
         } catch (\Throwable $e) {
-            return response()->json([
-                'message' => 'Delete failed',
-                'error'   => $e->getMessage(),
-            ], 500);
+            return response()->json(['message' => 'Delete failed','error'=>$e->getMessage()], 500);
         }
     }
-
 
     public function upload(Product $product, Request $request)
     {
         $request->validate([
-            'image' => ['required','image','mimes:jpg,jpeg,png,svg','max:5120'],
+            'image' => ['required','file','mimes:jpg,jpeg,png,webp,svg,svg+xml','max:5120'],
         ]);
 
-        $file = $request->file('image');
-        $filename = Str::uuid().'.'.$file->getClientOriginalExtension();
+        // hapus lama (opsional)
+        $this->tryDeletePublicProductImage($product->image_url);
 
-        // simpan via Storage public
-        $path = $file->storeAs('products', $filename, 'public'); // storage/app/public/products/...
-        $imageUrl = Storage::disk('public')->url($path);         // /storage/products/...
+        // simpan baru → path relatif
+        $imagePath = $this->putPublicProductImage($request->file('image'));
 
-        $product->image_url = $imageUrl;
+        $product->image_url = $imagePath; // simpan path relatif di DB
         $product->save();
 
         return response()->json([
             'success' => true,
             'data' => [
                 'id' => $product->id,
-                'image_url' => $imageUrl,
-                'full_url' => $imageUrl, // sudah absolute oleh url generator disk
+                'image_url' => $imagePath, // contoh: /public/uploads/products/uuid.png
             ]
         ]);
     }
