@@ -1,8 +1,8 @@
 {
   "info": {
-    "name": "POS API (Sanctum) — Admin & Kasir + Purchasing + Sales v2",
+    "name": "POS API (Sanctum) — Master Data, Purchasing, Sales v2",
     "_postman_id": "9d8f51c7-47f2-4e8f-9e0f-abcdef654321",
-    "description": "Urutan: Register → Login → Master Data → Products → Purchasing (PO) → GR → Stock Logs → Sales → Logout.\nCATATAN: Semua body menggunakan raw JSON. Sales sudah memakai unit_price, discount_nominal (per unit), service_charge, tax_percent/tax nominal, dan payments.",
+    "description": "Urutan: Register → Login → Master Data → Products → Purchasing (PO) → GR → Inventory → Stock Logs → Sales → Logout.\nCATATAN: Semua body raw JSON (kecuali opsi upload file multipart).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -13,12 +13,15 @@
     { "key": "sub_category_id", "value": "1" },
     { "key": "supplier_id", "value": "1" },
     { "key": "product_id", "value": "1" },
+    { "key": "store_location_id", "value": "1" },
+    { "key": "user_id", "value": "1" },
 
     { "key": "purchase_id", "value": "1" },
     { "key": "goods_receipt_id", "value": "1" },
 
     { "key": "scan_sku", "value": "SKU-001" },
-    { "key": "sale_id", "value": "1" }
+    { "key": "sale_id", "value": "1" },
+    { "key": "stock_log_id", "value": "1" }
   ],
   "item": [
     {
@@ -28,7 +31,10 @@
           "name": "Register (Admin)",
           "request": {
             "method": "POST",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Content-Type","value":"application/json"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
             "url": {"raw":"{{base_url}}/api/register","host":["{{base_url}}"],"path":["api","register"]},
             "body": {"mode":"raw","raw":"{\n  \"name\": \"Admin\",\n  \"email\": \"admin@example.com\",\n  \"password\": \"password\",\n  \"password_confirmation\": \"password\",\n  \"role\": \"admin\"\n}"}
           }
@@ -37,7 +43,10 @@
           "name": "Register (Kasir)",
           "request": {
             "method": "POST",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Content-Type","value":"application/json"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
             "url": {"raw":"{{base_url}}/api/register","host":["{{base_url}}"],"path":["api","register"]},
             "body": {"mode":"raw","raw":"{\n  \"name\": \"Kasir A\",\n  \"email\": \"kasir@example.com\",\n  \"password\": \"password\",\n  \"password_confirmation\": \"password\",\n  \"role\": \"kasir\"\n}"}
           }
@@ -63,16 +72,33 @@
           ],
           "request": {
             "method": "POST",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Content-Type","value":"application/json"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
             "url": {"raw":"{{base_url}}/api/login","host":["{{base_url}}"],"path":["api","login"]},
             "body": {"mode":"raw","raw":"{\n  \"email\": \"admin@example.com\",\n  \"password\": \"password\"\n}"}
+          }
+        },
+        {
+          "name": "Me (profile aktif)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/me","host":["{{base_url}}"],"path":["api","me"]}
           }
         },
         {
           "name": "Logout",
           "request": {
             "method": "POST",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {"raw":"{{base_url}}/api/logout","host":["{{base_url}}"],"path":["api","logout"]}
           }
         }
@@ -86,15 +112,22 @@
           "name": "GET Categories (list)",
           "request": {
             "method": "GET",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {"raw":"{{base_url}}/api/categories","host":["{{base_url}}"],"path":["api","categories"]}
           }
         },
         {
-          "name": "POST Category (create)",
+          "name": "POST Category (create) [ADMIN]",
           "request": {
             "method": "POST",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"},{"key":"Content-Type","value":"application/json"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
             "url": {"raw":"{{base_url}}/api/categories","host":["{{base_url}}"],"path":["api","categories"]},
             "body": {"mode":"raw","raw":"{\n  \"name\": \"Pakaian\"\n}"}
           }
@@ -103,24 +136,34 @@
           "name": "GET Category (show)",
           "request": {
             "method": "GET",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {"raw":"{{base_url}}/api/categories/{{category_id}}","host":["{{base_url}}"],"path":["api","categories","{{category_id}}"]}
           }
         },
         {
-          "name": "PUT Category (update)",
+          "name": "PUT Category (update) [ADMIN]",
           "request": {
             "method": "PUT",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"},{"key":"Content-Type","value":"application/json"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
             "url": {"raw":"{{base_url}}/api/categories/{{category_id}}","host":["{{base_url}}"],"path":["api","categories","{{category_id}}"]},
             "body": {"mode":"raw","raw":"{\n  \"name\": \"Pakaian Pria\"\n}"}
           }
         },
         {
-          "name": "DELETE Category (destroy)",
+          "name": "DELETE Category (destroy) [ADMIN]",
           "request": {
             "method": "DELETE",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {"raw":"{{base_url}}/api/categories/{{category_id}}","host":["{{base_url}}"],"path":["api","categories","{{category_id}}"]}
           }
         }
@@ -134,15 +177,22 @@
           "name": "GET Sub-Categories (list)",
           "request": {
             "method": "GET",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {"raw":"{{base_url}}/api/sub-categories","host":["{{base_url}}"],"path":["api","sub-categories"]}
           }
         },
         {
-          "name": "POST Sub-Category (create)",
+          "name": "POST Sub-Category (create) [ADMIN]",
           "request": {
             "method": "POST",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"},{"key":"Content-Type","value":"application/json"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
             "url": {"raw":"{{base_url}}/api/sub-categories","host":["{{base_url}}"],"path":["api","sub-categories"]},
             "body": {"mode":"raw","raw":"{\n  \"category_id\": {{category_id}},\n  \"name\": \"Kaos\"\n}"}
           }
@@ -151,24 +201,34 @@
           "name": "GET Sub-Category (show)",
           "request": {
             "method": "GET",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {"raw":"{{base_url}}/api/sub-categories/{{sub_category_id}}","host":["{{base_url}}"],"path":["api","sub-categories","{{sub_category_id}}"]}
           }
         },
         {
-          "name": "PUT Sub-Category (update)",
+          "name": "PUT Sub-Category (update) [ADMIN]",
           "request": {
             "method": "PUT",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"},{"key":"Content-Type","value":"application/json"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
             "url": {"raw":"{{base_url}}/api/sub-categories/{{sub_category_id}}","host":["{{base_url}}"],"path":["api","sub-categories","{{sub_category_id}}"]},
             "body": {"mode":"raw","raw":"{\n  \"name\": \"Kaos Oblong\"\n}"}
           }
         },
         {
-          "name": "DELETE Sub-Category (destroy)",
+          "name": "DELETE Sub-Category (destroy) [ADMIN]",
           "request": {
             "method": "DELETE",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {"raw":"{{base_url}}/api/sub-categories/{{sub_category_id}}","host":["{{base_url}}"],"path":["api","sub-categories","{{sub_category_id}}"]}
           }
         }
@@ -190,7 +250,7 @@
           }
         },
         {
-          "name": "POST Supplier (create)",
+          "name": "POST Supplier (create) [ADMIN]",
           "request": {
             "method": "POST",
             "header": [
@@ -217,7 +277,7 @@
           }
         },
         {
-          "name": "PUT Supplier (update)",
+          "name": "PUT Supplier (update) [ADMIN]",
           "request": {
             "method": "PUT",
             "header": [
@@ -233,7 +293,7 @@
           }
         },
         {
-          "name": "DELETE Supplier (destroy)",
+          "name": "DELETE Supplier (destroy) [ADMIN]",
           "request": {
             "method": "DELETE",
             "header": [
@@ -253,7 +313,10 @@
           "name": "GET Products (list)",
           "request": {
             "method": "GET",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {"raw":"{{base_url}}/api/products","host":["{{base_url}}"],"path":["api","products"]}
           }
         },
@@ -261,7 +324,10 @@
           "name": "GET Products (list + filters)",
           "request": {
             "method": "GET",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {
               "raw": "{{base_url}}/api/products?category_id={{category_id}}&search=Kaos",
               "host": ["{{base_url}}"],
@@ -274,10 +340,14 @@
           }
         },
         {
-          "name": "POST Product (create)",
+          "name": "POST Product (create) [ADMIN]",
           "request": {
             "method": "POST",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"},{"key":"Content-Type","value":"application/json"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
             "url": {"raw":"{{base_url}}/api/products","host":["{{base_url}}"],"path":["api","products"]},
             "body": {"mode":"raw","raw":"{\n  \"sku\": \"SKU-001\",\n  \"name\": \"Kaos Logo\",\n  \"description\": \"Kaos logo official\",\n  \"price\": 120000,\n  \"category_id\": {{category_id}},\n  \"sub_category_id\": {{sub_category_id}},\n  \"stock\": 0\n}"}
           }
@@ -286,24 +356,34 @@
           "name": "GET Product (show)",
           "request": {
             "method": "GET",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {"raw":"{{base_url}}/api/products/{{product_id}}","host":["{{base_url}}"],"path":["api","products","{{product_id}}"]}
           }
         },
         {
-          "name": "PUT Product (update)",
+          "name": "PUT Product (update) [ADMIN]",
           "request": {
             "method": "PUT",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"},{"key":"Content-Type","value":"application/json"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
             "url": {"raw":"{{base_url}}/api/products/{{product_id}}","host":["{{base_url}}"],"path":["api","products","{{product_id}}"]},
             "body": {"mode":"raw","raw":"{\n  \"name\": \"Kaos Logo Edisi 2\",\n  \"price\": 125000,\n  \"stock\": 20\n}"}
           }
         },
         {
-          "name": "DELETE Product (destroy)",
+          "name": "DELETE Product (destroy) [ADMIN]",
           "request": {
             "method": "DELETE",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {"raw":"{{base_url}}/api/products/{{product_id}}","host":["{{base_url}}"],"path":["api","products","{{product_id}}"]}
           }
         },
@@ -311,7 +391,10 @@
           "name": "SCAN by SKU (/products/search)",
           "request": {
             "method": "GET",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {
               "raw": "{{base_url}}/api/products/search?sku={{scan_sku}}",
               "host": ["{{base_url}}"],
@@ -321,19 +404,27 @@
           }
         },
         {
-          "name": "POST Product Stock Change (adjustment/in/out)",
+          "name": "POST Product Stock Change (adjustment/in/out) [ADMIN]",
           "request": {
             "method": "POST",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"},{"key":"Content-Type","value":"application/json"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
             "url": {"raw":"{{base_url}}/api/products/{{product_id}}/stock/change","host":["{{base_url}}"],"path":["api","products","{{product_id}}","stock","change"]},
             "body": {"mode":"raw","raw":"{\n  \"change_type\": \"adjustment\",\n  \"quantity\": -2,\n  \"note\": \"Koreksi stok fisik\"\n}"}
           }
         },
         {
-          "name": "POST Product Upload (pakai image_url sebagai JSON)",
+          "name": "POST Product Upload (JSON: image_url) [ADMIN]",
           "request": {
             "method": "POST",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"},{"key":"Content-Type","value":"application/json"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
             "url": {"raw":"{{base_url}}/api/products/{{product_id}}/upload","host":["{{base_url}}"],"path":["api","products","{{product_id}}","upload"]},
             "body": {"mode":"raw","raw":"{\n  \"image_url\": \"https://example.com/images/sku-001.jpg\"\n}"}
           }
@@ -342,13 +433,81 @@
     },
 
     {
-      "name": "06 Purchasing (PO)",
+      "name": "06 Store Locations",
       "item": [
         {
-          "name": "GET Purchases (list, optional filter status)",
+          "name": "GET Store Locations (list)",
           "request": {
             "method": "GET",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/store-locations","host":["{{base_url}}"],"path":["api","store-locations"]}
+          }
+        },
+        {
+          "name": "GET Store Location (show)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/store-locations/{{store_location_id}}","host":["{{base_url}}"],"path":["api","store-locations","{{store_location_id}}"]}
+          }
+        },
+        {
+          "name": "POST Store Location (create) [ADMIN]",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
+            "url": {"raw":"{{base_url}}/api/store-locations","host":["{{base_url}}"],"path":["api","store-locations"]},
+            "body": {"mode":"raw","raw":"{\n  \"name\": \"Toko Pusat\",\n  \"code\": \"HQ\",\n  \"address\": \"Jl. Utama No. 1\",\n  \"phone\": \"021123456\"\n}"}
+          }
+        },
+        {
+          "name": "PUT Store Location (update) [ADMIN]",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
+            "url": {"raw":"{{base_url}}/api/store-locations/{{store_location_id}}","host":["{{base_url}}"],"path":["api","store-locations","{{store_location_id}}"]},
+            "body": {"mode":"raw","raw":"{\n  \"name\": \"Toko Pusat 2\",\n  \"phone\": \"021765432\"\n}"}
+          }
+        },
+        {
+          "name": "DELETE Store Location (destroy) [ADMIN]",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/store-locations/{{store_location_id}}","host":["{{base_url}}"],"path":["api","store-locations","{{store_location_id}}"]}
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "07 Purchasing (PO)",
+      "item": [
+        {
+          "name": "GET Purchases (list, optional status) [ADMIN|KASIR]",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {
               "raw":"{{base_url}}/api/purchases?status=draft",
               "host":["{{base_url}}"],
@@ -358,10 +517,14 @@
           }
         },
         {
-          "name": "POST Purchase (Create Draft — multi-item)",
+          "name": "POST Purchase (Create Draft — multi-item) [ADMIN|KASIR]",
           "request": {
             "method": "POST",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"},{"key":"Content-Type","value":"application/json"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
             "url": {"raw":"{{base_url}}/api/purchases","host":["{{base_url}}"],"path":["api","purchases"]},
             "body": {
               "mode":"raw",
@@ -370,26 +533,35 @@
           }
         },
         {
-          "name": "GET Purchase (detail)",
+          "name": "GET Purchase (detail) [ADMIN|KASIR]",
           "request": {
             "method": "GET",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {"raw":"{{base_url}}/api/purchases/{{purchase_id}}","host":["{{base_url}}"],"path":["api","purchases","{{purchase_id}}"]}
           }
         },
         {
-          "name": "POST Purchase Approve",
+          "name": "POST Purchase Approve [ADMIN]",
           "request": {
             "method": "POST",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {"raw":"{{base_url}}/api/purchases/{{purchase_id}}/approve","host":["{{base_url}}"],"path":["api","purchases","{{purchase_id}}","approve"]}
           }
         },
         {
-          "name": "POST Purchase Cancel",
+          "name": "POST Purchase Cancel [ADMIN]",
           "request": {
             "method": "POST",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {"raw":"{{base_url}}/api/purchases/{{purchase_id}}/cancel","host":["{{base_url}}"],"path":["api","purchases","{{purchase_id}}","cancel"]}
           }
         }
@@ -397,21 +569,28 @@
     },
 
     {
-      "name": "07 Goods Receipt (GR)",
+      "name": "08 Goods Receipt (GR)",
       "item": [
         {
-          "name": "GET For-Receipt (remaining per item)",
+          "name": "GET For-Receipt (remaining per item) [ADMIN|KASIR]",
           "request": {
             "method": "GET",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {"raw":"{{base_url}}/api/purchases/{{purchase_id}}/for-receipt","host":["{{base_url}}"],"path":["api","purchases","{{purchase_id}}","for-receipt"]}
           }
         },
         {
-          "name": "POST Receive (buat GR + update stok)",
+          "name": "POST Receive (buat GR + update stok) [ADMIN]",
           "request": {
             "method": "POST",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"},{"key":"Content-Type","value":"application/json"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
             "url": {"raw":"{{base_url}}/api/purchases/{{purchase_id}}/receive","host":["{{base_url}}"],"path":["api","purchases","{{purchase_id}}","receive"]},
             "body": {
               "mode":"raw",
@@ -420,18 +599,24 @@
           }
         },
         {
-          "name": "GET Receipts (list)",
+          "name": "GET Receipts (list) [ADMIN|KASIR]",
           "request": {
             "method": "GET",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {"raw":"{{base_url}}/api/receipts","host":["{{base_url}}"],"path":["api","receipts"]}
           }
         },
         {
-          "name": "GET Receipt (detail)",
+          "name": "GET Receipt (detail) [ADMIN|KASIR]",
           "request": {
             "method": "GET",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {"raw":"{{base_url}}/api/receipts/{{goods_receipt_id}}","host":["{{base_url}}"],"path":["api","receipts","{{goods_receipt_id}}"]}
           }
         }
@@ -439,13 +624,112 @@
     },
 
     {
-      "name": "08 Stock Logs",
+      "name": "09 Inventory",
+      "item": [
+        {
+          "name": "GET Layers (FIFO layers) — filters",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {
+              "raw":"{{base_url}}/api/inventory/layers?product_id={{product_id}}&store_id={{store_location_id}}",
+              "host":["{{base_url}}"],
+              "path":["api","inventory","layers"],
+              "query":[
+                {"key":"product_id","value":"{{product_id}}"},
+                {"key":"store_id","value":"{{store_location_id}}"}
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET Consumptions (by product / sale_id)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {
+              "raw":"{{base_url}}/api/inventory/consumptions?product_id={{product_id}}",
+              "host":["{{base_url}}"],
+              "path":["api","inventory","consumptions"],
+              "query":[{"key":"product_id","value":"{{product_id}}"}]
+            }
+          }
+        },
+        {
+          "name": "GET Valuation (on-hand x cost)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/inventory/valuation","host":["{{base_url}}"],"path":["api","inventory","valuation"]}
+          }
+        },
+        {
+          "name": "GET Sales FIFO Breakdown (per sale)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/sales/{{sale_id}}/fifo-breakdown","host":["{{base_url}}"],"path":["api","sales","{{sale_id}}","fifo-breakdown"]}
+          }
+        },
+        {
+          "name": "GET Inventory Products (admin)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/inventory/products","host":["{{base_url}}"],"path":["api","inventory","products"]}
+          }
+        },
+        {
+          "name": "GET Inventory Product Logs (admin)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/inventory/products/{{product_id}}/logs","host":["{{base_url}}"],"path":["api","inventory","products","{{product_id}}","logs"]}
+          }
+        },
+        {
+          "name": "GET Inventory Product Summary (admin)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/inventory/products/{{product_id}}/summary","host":["{{base_url}}"],"path":["api","inventory","products","{{product_id}}","summary"]}
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "10 Stock Logs",
       "item": [
         {
           "name": "GET Stock Logs (by product)",
           "request": {
             "method": "GET",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {
               "raw":"{{base_url}}/api/stock-logs?product_id={{product_id}}",
               "host":["{{base_url}}"],
@@ -458,18 +742,21 @@
           "name": "GET Stock Log (detail)",
           "request": {
             "method": "GET",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
-            "url": {"raw":"{{base_url}}/api/stock-logs/1","host":["{{base_url}}"],"path":["api","stock-logs","1"]}
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/stock-logs/{{stock_log_id}}","host":["{{base_url}}"],"path":["api","stock-logs","{{stock_log_id}}"]}
           }
         }
       ]
     },
 
     {
-      "name": "09 Sales (POS)",
+      "name": "11 Sales (POS)",
       "item": [
         {
-          "name": "POST Sale (transaksi — pakai diskon per item + service charge + tax_percent)",
+          "name": "POST Sale (transaksi — diskon per item + service charge + tax_percent)",
           "request": {
             "method": "POST",
             "header": [
@@ -485,10 +772,13 @@
           }
         },
         {
-          "name": "GET Sales (list, optional filter code/cashier_id/status)",
+          "name": "GET Sales (list, optional filter)",
           "request": {
             "method": "GET",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {
               "raw":"{{base_url}}/api/sales?code=POS-2025&status=completed",
               "host":["{{base_url}}"],
@@ -504,16 +794,135 @@
           "name": "GET Sale (detail)",
           "request": {
             "method": "GET",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {"raw":"{{base_url}}/api/sales/{{sale_id}}","host":["{{base_url}}"],"path":["api","sales","{{sale_id}}"]}
           }
         },
         {
-          "name": "POST Sale Void (kembalikan stok)",
+          "name": "POST Sale Void (kembalikan stok) [ADMIN]",
           "request": {
             "method": "POST",
-            "header": [{"key":"Accept","value":"application/json"},{"key":"Authorization","value":"Bearer {{auth_token}}"}],
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
             "url": {"raw":"{{base_url}}/api/sales/{{sale_id}}/void","host":["{{base_url}}"],"path":["api","sales","{{sale_id}}","void"]}
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "12 Master User [ADMIN]",
+      "item": [
+        {
+          "name": "GET Users (list + search/role filter)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {
+              "raw":"{{base_url}}/api/users?search=&role=",
+              "host":["{{base_url}}"],
+              "path":["api","users"],
+              "query":[
+                {"key":"search","value":""},
+                {"key":"role","value":""}
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST User (create)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
+            "url": {"raw":"{{base_url}}/api/users","host":["{{base_url}}"],"path":["api","users"]},
+            "body": {
+              "mode":"raw",
+              "raw":"{\n  \"name\": \"Kasir Baru\",\n  \"email\": \"kasir2@example.com\",\n  \"password\": \"password123\",\n  \"role\": \"kasir\",\n  \"store_location_id\": {{store_location_id}}\n}"
+            }
+          }
+        },
+        {
+          "name": "GET User (detail)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/users/{{user_id}}","host":["{{base_url}}"],"path":["api","users","{{user_id}}"]}
+          }
+        },
+        {
+          "name": "PUT User (update profile/store)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
+            "url": {"raw":"{{base_url}}/api/users/{{user_id}}","host":["{{base_url}}"],"path":["api","users","{{user_id}}"]},
+            "body": {"mode":"raw","raw":"{\n  \"name\": \"Kasir Dua\",\n  \"email\": \"kasir2@example.com\",\n  \"store_location_id\": {{store_location_id}}\n}"}
+          }
+        },
+        {
+          "name": "PATCH User Role (admin/kasir)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
+            "url": {"raw":"{{base_url}}/api/users/{{user_id}}/role","host":["{{base_url}}"],"path":["api","users","{{user_id}}","role"]},
+            "body": {"mode":"raw","raw":"{\n  \"role\": \"kasir\"\n}"}
+          }
+        },
+        {
+          "name": "POST Reset Password (force logout)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"},
+              {"key":"Content-Type","value":"application/json"}
+            ],
+            "url": {"raw":"{{base_url}}/api/users/{{user_id}}/reset-password","host":["{{base_url}}"],"path":["api","users","{{user_id}}","reset-password"]},
+            "body": {"mode":"raw","raw":"{\n  \"password\": \"baruBanget123\"\n}"}
+          }
+        },
+        {
+          "name": "DELETE User",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/users/{{user_id}}","host":["{{base_url}}"],"path":["api","users","{{user_id}}"]}
+          }
+        },
+        {
+          "name": "GET Role Options (dropdown)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key":"Accept","value":"application/json"},
+              {"key":"Authorization","value":"Bearer {{auth_token}}"}
+            ],
+            "url": {"raw":"{{base_url}}/api/users/roles/options","host":["{{base_url}}"],"path":["api","users","roles","options"]}
           }
         }
       ]

@@ -14,6 +14,7 @@ use App\Http\Controllers\PurchaseReceiveController;
 use App\Http\Controllers\GoodsReceiptController;
 use App\Http\Controllers\StoreLocationController;
 use App\Http\Controllers\InventoryController;
+use App\Http\Controllers\UserController;
 
 /*
 |--------------------------------------------------------------------------
@@ -35,9 +36,9 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::get('/store-locations',        [StoreLocationController::class, 'index']);
     Route::post('/store-locations',       [StoreLocationController::class, 'store']);
-    Route::get('/store-locations/{id}',   [StoreLocationController::class, 'show']);
-    Route::put('/store-locations/{id}',   [StoreLocationController::class, 'update']);
-    Route::delete('/store-locations/{id}',[StoreLocationController::class, 'destroy']);
+    Route::get('/store-locations/{id}',   [StoreLocationController::class, 'show'])->whereNumber('id');
+    Route::put('/store-locations/{id}',   [StoreLocationController::class, 'update'])->whereNumber('id');
+    Route::delete('/store-locations/{id}',[StoreLocationController::class, 'destroy'])->whereNumber('id');
 
     Route::get('/inventory/layers',       [InventoryController::class, 'layers']);       // ?product_id=&store_id=&per_page=
     Route::get('/inventory/consumptions', [InventoryController::class, 'consumptions']); // ?product_id=&sale_id=&per_page=
@@ -114,28 +115,26 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::delete('/{category}',        [CategoryController::class, 'destroy'])->whereNumber('category');
         });
 
-        // SubCategories CRUD (tetap seperti semula: hanya PUT)
+        // SubCategories CRUD
         Route::prefix('sub-categories')->group(function () {
             Route::post('/',                    [SubCategoryController::class, 'store']);
             Route::put('/{subCategory}',        [SubCategoryController::class, 'update'])->whereNumber('subCategory');
             Route::delete('/{subCategory}',     [SubCategoryController::class, 'destroy'])->whereNumber('subCategory');
         });
 
-        // Products CRUD + upload (PUT & PATCH dipisah)
+        // Products CRUD + upload (hapus route upload duplikat)
         Route::prefix('products')->group(function () {
             Route::post('/',                    [ProductController::class, 'store']);
             Route::put('/{product}',            [ProductController::class, 'update'])->whereNumber('product');
             Route::patch('/{product}',          [ProductController::class, 'update'])->whereNumber('product');
             Route::delete('/{product}',         [ProductController::class, 'destroy'])->whereNumber('product');
             Route::post('/{product}/upload',    [ProductController::class, 'upload'])->whereNumber('product');
-            Route::post('/products/{product}/upload', [ProductController::class, 'upload']);
-
 
             // Manual stock adjustment
             Route::post('/{product}/stock/change', [StockController::class,'change'])->whereNumber('product');
         });
 
-        // Suppliers CRUD (tetap: PUT saja)
+        // Suppliers CRUD
         Route::prefix('suppliers')->group(function () {
             Route::post('/',                    [SupplierController::class, 'store']);
             Route::put('/{supplier}',           [SupplierController::class, 'update'])->whereNumber('supplier');
@@ -145,9 +144,26 @@ Route::middleware('auth:sanctum')->group(function () {
         // Sales — void
         Route::post('sales/{sale}/void',        [SaleController::class, 'void'])->whereNumber('sale');
 
-        //stock_log new
-        Route::get('/inventory/products', [InventoryController::class, 'inventoryProducts']);
-        Route::get('/inventory/products/{id}/logs', [InventoryController::class, 'productLogs']);
-        Route::get('/inventory/products/{id}/summary', [InventoryController::class, 'productSummary']);
+        // Inventory (produk spesifik)
+        Route::get('/inventory/products',                 [InventoryController::class, 'inventoryProducts']);
+        Route::get('/inventory/products/{id}/logs',       [InventoryController::class, 'productLogs'])->whereNumber('id');
+        Route::get('/inventory/products/{id}/summary',    [InventoryController::class, 'productSummary'])->whereNumber('id');
+
+        // === Master User ===
+        Route::prefix('users')->group(function () {
+            Route::get('/',                  [UserController::class, 'index']);   // ?search=&role=&per_page=
+            Route::get('/{user}',            [UserController::class, 'show'])->whereNumber('user');
+            Route::post('/',                 [UserController::class, 'store']);
+            Route::put('/{user}',            [UserController::class, 'update'])->whereNumber('user');
+            Route::patch('/{user}',          [UserController::class, 'update'])->whereNumber('user');
+            Route::delete('/{user}',         [UserController::class, 'destroy'])->whereNumber('user');
+
+            // Aksi khusus
+            Route::patch('/{user}/role',     [UserController::class, 'updateRole'])->whereNumber('user');
+            Route::post('/{user}/reset-password', [UserController::class, 'resetPassword'])->whereNumber('user');
+
+            // Dropdown helper
+            Route::get('/roles/options',     [UserController::class, 'roleOptions']);
+        });
     });
 });

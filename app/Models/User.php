@@ -19,7 +19,7 @@ class User extends Authenticatable
         'email',
         'password',
         'role',
-        'store_location_id',   // ← ganti: pakai FK, bukan store_name/address/phone
+        'store_location_id',   // ← pakai FK
     ];
 
     /**
@@ -62,5 +62,40 @@ class User extends Authenticatable
     public function isKasir(): bool
     {
         return $this->role === 'kasir';
+    }
+
+    /**
+     * === Tambahan: Mutator password (auto-hash, anti double-hash) ===
+     */
+    public function setPasswordAttribute($value): void
+    {
+        if (!is_string($value) || $value === '') return;
+
+        // Jika sudah format bcrypt ($2y$ / $2a$ / $2b$) dengan panjang 60, anggap sudah hashed
+        if (strlen($value) === 60 && str_starts_with($value, '$2')) {
+            $this->attributes['password'] = $value;
+            return;
+        }
+
+        // Selain itu, hash sekarang
+        $this->attributes['password'] = \Illuminate\Support\Facades\Hash::make($value);
+    }
+
+    /**
+     * === Tambahan: Scopes untuk memudahkan filter di controller index ===
+     */
+    public function scopeSearch($q, ?string $s)
+    {
+        if (!$s) return $q;
+        $s = trim($s);
+        return $q->where(function ($w) use ($s) {
+            $w->where('name','like',"%{$s}%")
+              ->orWhere('email','like',"%{$s}%");
+        });
+    }
+
+    public function scopeRole($q, ?string $role)
+    {
+        return $role ? $q->where('role', $role) : $q;
     }
 }
