@@ -13,21 +13,46 @@ class UserController extends Controller
      */
     public function index(Request $r)
     {
-        $q = User::with('storeLocation')
-            ->search($r->input('search'))
-            ->role($r->input('role'))
-            ->orderByDesc('id');
+        $q = User::query()->with('storeLocation'); // pastikan relasi ada (optional)
 
-        $perPage = min((int)($r->per_page ?? 10), 100);
-        $res = $q->paginate($perPage);
+        // ==== FILTER STORE ====
+        // Terima store_location_id ATAU store_id; juga dukung string "null"
+        if ($r->filled('store_location_id')) {
+            $val = $r->input('store_location_id');
+            if ($val === 'null') {
+                $q->whereNull('store_location_id');
+            } else {
+                $q->where('store_location_id', (int) $val);
+            }
+        } elseif ($r->filled('store_id')) {
+            $val = $r->input('store_id');
+            if ($val === 'null') {
+                $q->whereNull('store_location_id');
+            } else {
+                $q->where('store_location_id', (int) $val);
+            }
+        }
 
-        // hide sensitive
-        $res->getCollection()->transform(function ($u) {
-            $u->makeHidden(['password','remember_token']);
-            return $u;
-        });
+        // ==== FILTER ROLE ====
+        if ($r->filled('role')) {
+            $q->where('role', strtolower($r->input('role')));
+        }
 
-        return $res;
+        // ==== FILTER SEARCH (name / email) ====
+        if ($r->filled('search')) {
+            $s = $r->input('search');
+            $q->where(function ($qq) use ($s) {
+                $qq->where('name', 'like', "%{$s}%")
+                   ->orWhere('email', 'like', "%{$s}%");
+            });
+        }
+
+        // ===== Paginate =====
+        $per = max(1, min((int) $r->input('per_page', 10), 100));
+        $users = $q->orderByDesc('id')->paginate($per)->appends($r->query());
+
+        // FE kamu sudah handle bentuk paginator Laravel standar (data, meta) & variasinya
+        return response()->json($users);
     }
 
     /**
