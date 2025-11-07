@@ -15,6 +15,7 @@ use App\Http\Controllers\GoodsReceiptController;
 use App\Http\Controllers\StoreLocationController;
 use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\UserController;
+use App\Http\Controllers\ProductImportController;
 
 /*
 |--------------------------------------------------------------------------
@@ -134,6 +135,11 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::post('/{product}/stock/change', [StockController::class,'change'])->whereNumber('product');
         });
 
+        Route::middleware('auth:sanctum')->group(function () {
+            Route::get('/products/import/template', [ProductImportController::class, 'template']);
+            Route::post('/products/import', [ProductImportController::class, 'import']);
+        });
+
         // Suppliers CRUD
         Route::prefix('suppliers')->group(function () {
             Route::post('/',                    [SupplierController::class, 'store']);
@@ -165,5 +171,7 @@ Route::middleware('auth:sanctum')->group(function () {
             // Dropdown helper
             Route::get('/roles/options',     [UserController::class, 'roleOptions']);
         });
+
+        
     });
 });
