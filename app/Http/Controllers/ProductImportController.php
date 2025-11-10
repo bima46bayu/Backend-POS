@@ -145,8 +145,8 @@ class ProductImportController extends Controller
         /** ========== 2) Proses import XLSX: parse (prioritas ID), create/upsert, store dari /me ========== */
 public function import(Request $req)
 {
-    // --- inisialisasi awal agar tidak undefined ---
-    $rows = [];
+    // supaya variabel ada untuk scope catch luar
+    $rows  = [];
     $sheet = null;
 
     try {
@@ -156,48 +156,43 @@ public function import(Request $req)
         ]);
         $mode = $req->input('mode', 'upsert');
 
-        // store dari user
-        $user = $req->user();
+        // store dari user (wajib)
+        $user    = $req->user();
         $storeId = (int)($user?->store_location_id ?? optional($user?->store_location)->id ?? 0);
         if ($storeId <= 0) {
-            return response()->json(['status'=>'error','message'=>'Akun belum memiliki store_location_id.'], 422);
+            return response()->json(['status' => 'error', 'message' => 'Akun belum memiliki store_location_id.'], 422);
         }
 
         $uploaded = $req->file('file');
         if (!$uploaded || !$uploaded->isValid()) {
-            return response()->json(['status'=>'error','message'=>'File upload invalid'], 422);
+            return response()->json(['status' => 'error', 'message' => 'File upload invalid'], 422);
         }
 
-        // Reader sesuai ekstensi
-        $ext = strtolower($uploaded->getClientOriginalExtension());
+        // baca spreadsheet
+        $ext    = strtolower($uploaded->getClientOriginalExtension());
         $reader = $ext === 'xlsx'
             ? new \PhpOffice\PhpSpreadsheet\Reader\Xlsx()
             : \PhpOffice\PhpSpreadsheet\IOFactory::createReaderForFile($uploaded->getRealPath());
         $reader->setReadDataOnly(true);
 
         $spreadsheet = $reader->load($uploaded->getRealPath());
-
-        // --- pastikan $sheet valid sebelum dipakai ---
         $sheet = $spreadsheet->getSheetByName('Products') ?: $spreadsheet->getActiveSheet();
         if (!$sheet) {
-            return response()->json(['status'=>'error','message'=>'Worksheet "Products" tidak ditemukan'], 422);
+            return response()->json(['status' => 'error', 'message' => 'Worksheet "Products" tidak ditemukan'], 422);
         }
 
-        // --- set $rows SEKARANG (sebelum ada proses lain) ---
         $rows = $sheet->toArray(null, true, true, true);
-
-        // header wajib ada
         if (!isset($rows[1]) || !is_array($rows[1])) {
-            return response()->json(['status'=>'error','message'=>'Header tidak ditemukan di baris pertama'], 422);
+            return response()->json(['status' => 'error', 'message' => 'Header tidak ditemukan di baris pertama'], 422);
         }
 
-        // ------- header map (case-insensitive, aman) -------
-        $findCol = function($want, $fallback) use ($rows) {
+        // peta header (case-insensitive)
+        $findCol = function ($want, $fallback) use ($rows) {
             $want = strtolower($want);
             foreach ($rows[1] as $col => $val) {
                 if (strtolower(trim((string)$val)) === $want) return $col;
             }
-            return $fallback; // fallback untuk template standar
+            return $fallback;
         };
         $col = [
             'sku'         => $findCol('sku', 'A'),
@@ -209,29 +204,25 @@ public function import(Request $req)
             'description' => $findCol('description', 'G'),
         ];
 
-        // ------- cache master: Category & SubCategory -------
-        $catByName = \App\Models\Category::all()->keyBy(fn($c) => mb_strtolower(trim($c->name)));
-        $subs = \App\Models\SubCategory::select(['id','name','category_id'])->get();
-        $subByCatAndName = $subs->keyBy(fn($s) => ((int)$s->category_id).'::'.mb_strtolower(trim($s->name)));
-
-        // ------- flags untuk inventory -------
-        $hasLedger = \Illuminate\Support\Facades\Schema::hasTable('stock_ledger');
-        $hasLayers = \Illuminate\Support\Facades\Schema::hasTable('inventory_layers');
-        $hasInventory = $hasLedger || $hasLayers;
+        // cache master
+        $catByName = Category::all()->keyBy(fn ($c) => mb_strtolower(trim($c->name)));
+        $subs      = SubCategory::select(['id', 'name', 'category_id'])->get();
+        $subByCatAndName = $subs->keyBy(fn ($s) => ((int)$s->category_id) . '::' . mb_strtolower(trim($s->name)));
 
         // helper angka
-        $num = function($v) {
+        $num = function ($v) {
             if ($v === null || $v === '') return null;
             if (is_numeric($v)) return (float)$v;
-            $s = str_replace([' ', "\u{00A0}"], '', (string)$v);
-            $s = preg_replace('/\.(?=\d{3}(\D|$))/', '', $s); // buang thousand dot
-            $s = str_replace(',', '.', $s);
+            $s = str_replace([" ", "\u{00A0}"], '', (string)$v);
+            $s = preg_replace('/\.(?=\d{3}(\D|$))/', '', $s); // hapus thousand dot
+            $s = str_replace(',', '.', $s);                   // koma → titik
             return is_numeric($s) ? (float)$s : null;
         };
 
-        $created=0; $updated=0; $errors=[];
+        $created = 0; $updated = 0; $errors = [];
+        $touchedIds = []; // untuk resync stok absolut di akhir
 
-        \DB::beginTransaction();
+        DB::beginTransaction();
         try {
             $maxRow = count($rows);
             for ($r = 2; $r <= $maxRow; $r++) {
@@ -246,116 +237,208 @@ public function import(Request $req)
                     $subNm = trim((string)($line[$col['sub_name']] ?? ''));
                     $desc  = trim((string)($line[$col['description']] ?? ''));
 
-                    // skip baris kosong
+                    // baris kosong?
                     if ($sku==='' && $name==='' && $catNm==='' && $subNm==='' && $price===null && $stock===null && $desc==='') {
                         continue;
                     }
-                    if ($name==='') { $errors[]=['row'=>$r,'message'=>'Name is required']; continue; }
+                    if ($name === '') { $errors[] = ['row' => $r, 'message' => 'Name is required']; continue; }
 
-                    // resolve category & subcategory by name
+                    // resolve category/subcategory by name
                     $categoryId = null; $subcategoryId = null;
                     if ($catNm !== '') {
                         $cat = $catByName[mb_strtolower($catNm)] ?? null;
-                        if (!$cat) { $errors[]=['row'=>$r,'message'=>"Category '{$catNm}' not found"]; continue; }
+                        if (!$cat) { $errors[] = ['row' => $r, 'message' => "Category '{$catNm}' not found"]; continue; }
                         $categoryId = (int)$cat->id;
 
                         if ($subNm !== '') {
-                            $sub = $subByCatAndName[$categoryId.'::'.mb_strtolower($subNm)] ?? null;
-                            if (!$sub) { $errors[]=['row'=>$r,'message'=>"Subcategory '{$subNm}' (Category '{$cat->name}') not found"]; continue; }
+                            $sub = $subByCatAndName[$categoryId . '::' . mb_strtolower($subNm)] ?? null;
+                            if (!$sub) { $errors[] = ['row' => $r, 'message' => "Subcategory '{$subNm}' (Category '{$cat->name}') not found"]; continue; }
                             $subcategoryId = (int)$sub->id;
                         }
                     } elseif ($subNm !== '') {
-                        $errors[]=['row'=>$r,'message'=>"Subcategory '{$subNm}' given but Category empty"]; continue;
+                        $errors[] = ['row' => $r, 'message' => "Subcategory '{$subNm}' given but Category empty"]; continue;
                     }
 
-                    // angka default
+                    // default angka
                     $price = $price ?? 0.0;
                     $stock = $stock ?? 0.0;
 
-                    if ($mode === 'create-only' || $sku==='') {
-                        if ($sku !== '' && \App\Models\Product::where('sku', $sku)->exists()) {
-                            $errors[] = ['row'=>$r,'message'=>"SKU '{$sku}' already exists"];
+                    // create / upsert product
+                    if ($mode === 'create-only' || $sku === '') {
+                        if ($sku !== '' && Product::where('sku', $sku)->exists()) {
+                            $errors[] = ['row' => $r, 'message' => "SKU '{$sku}' already exists"];
                             continue;
                         }
 
-                        $p = new \App\Models\Product();
-                        if ($sku!=='') $p->sku = $sku;
+                        $p = new Product();
+                        if ($sku !== '') $p->sku = $sku;
                         $p->name            = $name;
                         $p->price           = $price;
-                        if (!$hasInventory) $p->stock = $stock;
                         $p->category_id     = $categoryId;
                         $p->sub_category_id = $subcategoryId;
                         $p->description     = $desc ?: null;
-                        if (\Illuminate\Support\Facades\Schema::hasColumn($p->getTable(), 'store_location_id')) {
+                        if (Schema::hasColumn($p->getTable(), 'store_location_id')) {
                             $p->store_location_id = $storeId;
                         }
+                        // kolom stock diisi 0 karena kita pakai inventory tables
+                        if (Schema::hasColumn($p->getTable(), 'stock')) $p->stock = 0;
                         $p->save();
                         $created++;
 
-                        if ($hasInventory && $stock > 0) {
-                            $this->recordOpeningStock($p->id, (float)$stock, $storeId, $price, false);
-                        }
                     } else {
-                        $p = $sku !== '' ? \App\Models\Product::where('sku', $sku)->first() : null;
+                        $p = $sku !== '' ? Product::where('sku', $sku)->first() : null;
                         if ($p) {
                             $p->name            = $name ?: $p->name;
                             $p->price           = $price;
-                            if (!$hasInventory) $p->stock = $stock;
                             $p->category_id     = $categoryId ?? $p->category_id;
                             $p->sub_category_id = $subcategoryId ?? $p->sub_category_id;
                             $p->description     = ($desc !== '') ? $desc : $p->description;
                             $p->save();
                             $updated++;
-
-                            if ($hasInventory && $stock > 0) {
-                                $this->recordOpeningStock($p->id, (float)$stock, $storeId, $price, true);
-                            }
                         } else {
-                            $p = new \App\Models\Product();
-                            if ($sku!=='') $p->sku = $sku;
+                            $p = new Product();
+                            if ($sku !== '') $p->sku = $sku;
                             $p->name            = $name;
                             $p->price           = $price;
-                            if (!$hasInventory) $p->stock = $stock;
                             $p->category_id     = $categoryId;
                             $p->sub_category_id = $subcategoryId;
                             $p->description     = $desc ?: null;
-                            if (\Illuminate\Support\Facades\Schema::hasColumn($p->getTable(), 'store_location_id')) {
+                            if (Schema::hasColumn($p->getTable(), 'store_location_id')) {
                                 $p->store_location_id = $storeId;
                             }
+                            if (Schema::hasColumn($p->getTable(), 'stock')) $p->stock = 0;
                             $p->save();
                             $created++;
+                        }
+                    }
 
-                            if ($hasInventory && $stock > 0) {
-                                $this->recordOpeningStock($p->id, (float)$stock, $storeId, $price, false);
+                    // ===============================
+                    // STOK AWAL → INVENTORY + LEDGER
+                    // ===============================
+                    if ($stock > 0 && Schema::hasTable('inventory_layers')) {
+                        // 1) Buat layer & ambil ID layer yang baru
+                        $layerId = \App\Support\InventoryQuick::addInboundLayer([
+                            'product_id'        => (int)$p->id,
+                            'qty'               => (float)$stock,
+                            'unit_cost'         => is_numeric($price) ? (float)$price : 0,
+                            'note'              => 'Stok awal (import excel)',
+                            'store_location_id' => $storeId,
+                            'source_type'       => 'IMPORT_OPEN',
+                            // set false supaya ledger kita tulis sendiri dengan pasti
+                            'with_ledger'       => false,
+                        ]);
+
+                        // 2) Pastikan ledger ADA (adaptif ke skema)
+                        if (Schema::hasTable('stock_ledger')) {
+                            $lcols = Schema::getColumnListing('stock_ledger');
+                            $has   = fn($n) => in_array($n, $lcols, true);
+                            $first = function(array $cands) use ($lcols): ?string {
+                                foreach ($cands as $c) if (in_array($c, $lcols, true)) return $c;
+                                return null;
+                            };
+
+                            $storeCol = $first(['store_location_id','store_id']);
+                            $refType  = $first(['ref_type','source_type']);
+                            $refIdCol = $first(['ref_id','source_id']);
+                            $hasInOut = $has('qty_in') && $has('qty_out');
+                            $hasQty   = $has('qty');
+                            $hasDir   = $has('direction');
+
+                            // Cek apakah sudah ada ledger untuk layer ini (hindari duplikat)
+                            $exists = false;
+                            if ($refIdCol && $refType) {
+                                $exists = DB::table('stock_ledger')->where([
+                                    ['product_id', '=', (int)$p->id],
+                                    [$refType, '=', 'IMPORT_OPEN'],
+                                    [$refIdCol, '=', $layerId],
+                                ])->exists();
+                            }
+
+                            if (!$exists) {
+                                $row = ['product_id' => (int)$p->id];
+                                if ($storeCol) $row[$storeCol] = $storeId;
+                                if ($refType)  $row[$refType]  = 'IMPORT_OPEN';
+                                if ($refIdCol) $row[$refIdCol] = $layerId;
+
+                                // Isi kolom quantity sesuai skema
+                                if ($hasInOut) {
+                                    $row['qty_in']  = (float)$stock;
+                                    $row['qty_out'] = 0;
+                                } elseif ($hasQty && $hasDir) {
+                                    $row['qty'] = (float)$stock;
+                                    $row['direction'] = 1; // masuk
+                                } elseif ($hasQty) {
+                                    $row['qty'] = (float)$stock;
+                                }
+
+                                // Biaya & meta opsional
+                                if ($has('unit_cost'))      $row['unit_cost']      = is_numeric($price) ? (float)$price : 0;
+                                if ($has('unit_price'))     $row['unit_price']     = is_numeric($price) ? (float)$price : 0;
+                                if ($has('subtotal_cost'))  $row['subtotal_cost']  = (float)$stock * (is_numeric($price) ? (float)$price : 0);
+                                if ($has('estimated_cost')) $row['estimated_cost'] = (float)$stock * (is_numeric($price) ? (float)$price : 0);
+                                if ($has('note'))           $row['note']           = 'Stok awal (import excel)';
+                                if ($has('user_id'))        $row['user_id']        = auth()->id() ?: null;
+                                if ($has('layer_id'))       $row['layer_id']       = $layerId;
+                                if ($has('created_at'))     $row['created_at']     = now();
+                                if ($has('updated_at'))     $row['updated_at']     = now();
+
+                                DB::table('stock_ledger')->insert($row);
                             }
                         }
                     }
+
+                    $touchedIds[] = (int)$p->id;
                 } catch (\Throwable $rowEx) {
-                    $errors[] = ['row'=>$r, 'message'=>$rowEx->getMessage()];
+                    $errors[] = ['row' => $r, 'message' => $rowEx->getMessage()];
                 }
             }
-            \DB::commit();
-        } catch (\Throwable $e) {
-            \DB::rollBack();
-            \Log::error('Import failed (DB): '.$e->getMessage(), ['trace'=>$e->getTraceAsString()]);
-            return response()->json(['status'=>'error','message'=>'Import failed: '.$e->getMessage()], 500);
+
+            // ===========================
+            // RESYNC absolut products.stock
+            // ===========================
+            if (Schema::hasTable('inventory_layers') && !empty($touchedIds)) {
+                $hasRemain = Schema::hasColumn('inventory_layers','qty_remaining')
+                           || Schema::hasColumn('inventory_layers','remaining_qty')
+                           || Schema::hasColumn('inventory_layers','remaining_quantity');
+
+                if ($hasRemain && Schema::hasColumn('products','stock')) {
+                    $remCol = Schema::hasColumn('inventory_layers','qty_remaining')      ? 'qty_remaining'
+                             : (Schema::hasColumn('inventory_layers','remaining_qty')     ? 'remaining_qty'
+                             : 'remaining_quantity');
+
+                    foreach (array_unique($touchedIds) as $pid) {
+                        $sumRemain = (float) DB::table('inventory_layers')->where('product_id', $pid)->sum($remCol);
+                        DB::table('products')->where('id', $pid)->update([
+                            'stock'      => $sumRemain,
+                            'updated_at' => now(),
+                        ]);
+                    }
+                }
+            }
+
+            DB::commit();
+        } catch (\Throwable $tx) {
+            DB::rollBack();
+            Log::error('Import failed (DB): '.$tx->getMessage(), ['trace' => $tx->getTraceAsString()]);
+            return response()->json(['status' => 'error', 'message' => 'Import failed: '.$tx->getMessage()], 500);
         }
 
         return response()->json([
-            'status'=>'ok',
-            'summary'=>[
-                'created'=>$created,
-                'updated'=>$updated,
-                'errors'=>$errors,
-                'total_rows_processed'=>($created+$updated+count($errors)),
-            ]
+            'status'  => 'ok',
+            'summary' => [
+                'created'               => $created,
+                'updated'               => $updated,
+                'errors'                => $errors,
+                'total_rows_processed'  => ($created + $updated + count($errors)),
+            ],
         ]);
     } catch (\Throwable $e) {
-        // --- JANGAN referensi $rows di sini; cukup kirim pesan umum ---
-        \Log::error('Import failed (IO): '.$e->getMessage(), ['trace'=>$e->getTraceAsString()]);
-        return response()->json(['status'=>'error','message'=>'Import failed: '.$e->getMessage()], 500);
+        Log::error('Import failed (IO): '.$e->getMessage(), ['trace' => $e->getTraceAsString()]);
+        return response()->json(['status' => 'error', 'message' => 'Import failed: '.$e->getMessage()], 500);
     }
 }
+
+
 
 /**
  * Catat stok awal/penyesuaian ke inventory tables bila tersedia.
@@ -368,16 +451,22 @@ protected function recordOpeningStock(int $productId, float $qty, int $storeId, 
     $cost = is_numeric($price) ? (float)$price : 0.0;
 
     // ===== INVENTORY LAYERS (adaptif) =====
-    if (\Illuminate\Support\Facades\Schema::hasTable('inventory_layers')) {
+    if (Schema::hasTable('inventory_layers')) {
         try {
-            $cols = \Illuminate\Support\Facades\Schema::getColumnListing('inventory_layers');
-            $has  = fn($n) => in_array($n, $cols, true);
+            $cols = Schema::getColumnListing('inventory_layers');
+            $has  = fn(string $n) => in_array($n, $cols, true);
+            $first = function (array $cands) use ($cols): ?string {
+                foreach ($cands as $c) if (in_array($c, $cols, true)) return $c;
+                return null;
+            };
 
-            $storeCol = $has('store_location_id') ? 'store_location_id' : ($has('store_id') ? 'store_id' : null);
-            $qtyCol   = $has('qty') ? 'qty' : ($has('quantity') ? 'quantity' : ($has('initial_qty') ? 'initial_qty' : ($has('opening_qty') ? 'opening_qty' : null)));
-            $remCol   = $has('remaining_qty') ? 'remaining_qty' : ($has('remaining_quantity') ? 'remaining_quantity' : ($has('qty_remaining') ? 'qty_remaining' : null));
-            $costCol  = $has('unit_cost') ? 'unit_cost' : ($has('unit_price') ? 'unit_price' : ($has('cost') ? 'cost' : null));
-            $srcCol   = $has('source') ? 'source' : ($has('source_type') ? 'source_type' : ($has('ref_type') ? 'ref_type' : null));
+            $storeCol = $first(['store_location_id','store_id']);
+            $qtyCol   = $first(['qty','quantity','initial_qty','qty_initial','opening_qty','qty_opening']);
+            $remCol   = $first(['remaining_qty','remaining_quantity','qty_remaining']);
+            $srcCol   = $first(['source','source_type','ref_type']);
+
+            $hasUnitPrice = $has('unit_price');
+            $hasUnitCost  = $has('unit_cost');
 
             if ($storeCol && $qtyCol) {
                 $data = [
@@ -385,37 +474,60 @@ protected function recordOpeningStock(int $productId, float $qty, int $storeId, 
                     $storeCol    => $storeId,
                     $qtyCol      => $qty,
                 ];
-                if ($remCol)  $data[$remCol]  = $qty;
-                if ($costCol) $data[$costCol] = $cost;
-                if ($srcCol)  $data[$srcCol]  = $asAdjustment ? 'IMPORT_ADJUST' : 'IMPORT_OPEN';
+
+                if ($remCol)   $data[$remCol]   = $qty;
+                if ($srcCol)   $data[$srcCol]   = $asAdjustment ? 'IMPORT_ADJUST' : 'IMPORT_OPEN';
+                if ($hasUnitPrice) $data['unit_price'] = $cost;
+                if ($hasUnitCost)  $data['unit_cost']  = $cost;
+
+                // kolom biaya lain (jika ada) → default aman
+                foreach (['unit_tax','unit_other_cost','unit_landed_cost','estimated_cost','subtotal_cost'] as $k) {
+                    if ($has($k) && !array_key_exists($k, $data)) $data[$k] = 0;
+                }
+
+                if ($has('source_id')) $data['source_id'] = null;
+                if ($has('ref_id'))    $data['ref_id']    = null;
+                if ($has('note'))      $data['note']      = $asAdjustment ? 'Import excel (adjust)' : 'Import excel (opening)';
+
                 if (in_array('created_at', $cols, true)) $data['created_at'] = $now;
                 if (in_array('updated_at', $cols, true)) $data['updated_at'] = $now;
 
-                \DB::table('inventory_layers')->insert($data);
+                DB::table('inventory_layers')->insert($data);
+            } else {
+                Log::error('inventory_layers: store/qty column not resolved', [
+                    'storeCol' => $storeCol, 'qtyCol' => $qtyCol, 'cols' => $cols
+                ]);
             }
         } catch (\Throwable $e) {
-            \Log::warning('inventory_layers insert skipped: '.$e->getMessage());
+            Log::error('inventory_layers insert failed', [
+                'product_id' => $productId,
+                'store_id'   => $storeId,
+                'qty'        => $qty,
+                'price'      => $cost,
+                'message'    => $e->getMessage(),
+            ]);
         }
     }
 
     // ===== STOCK LEDGER (adaptif) =====
-    if (\Illuminate\Support\Facades\Schema::hasTable('stock_ledger')) {
+    if (Schema::hasTable('stock_ledger')) {
         try {
-            $cols = \Illuminate\Support\Facades\Schema::getColumnListing('stock_ledger');
+            $cols = Schema::getColumnListing('stock_ledger');
             $has  = fn($n) => in_array($n, $cols, true);
+            $first = function (array $cands) use ($cols): ?string {
+                foreach ($cands as $c) if (in_array($c, $cols, true)) return $c;
+                return null;
+            };
 
-            $storeCol = $has('store_location_id') ? 'store_location_id' : ($has('store_id') ? 'store_id' : null);
-            $refType  = $has('ref_type') ? 'ref_type' : ($has('source_type') ? 'source_type' : null);
-            $refIdCol = $has('ref_id')   ? 'ref_id'   : ($has('source_id') ? 'source_id' : null);
+            $storeCol = $first(['store_location_id','store_id']);
+            $refType  = $first(['ref_type','source_type']);
+            $refIdCol = $first(['ref_id','source_id']);
 
-            // skema kuantitas yang mungkin:
             $hasInOut   = $has('qty_in') && $has('qty_out');
             $hasQtyOnly = $has('qty') && !$hasInOut && !$has('direction');
             $hasQtyDir  = $has('qty') && $has('direction');
 
-            $data = [
-                'product_id' => $productId,
-            ];
+            $data = ['product_id' => $productId];
             if ($storeCol) $data[$storeCol] = $storeId;
             if ($refType)  $data[$refType]  = $asAdjustment ? 'IMPORT_ADJUST' : 'IMPORT_OPEN';
             if ($refIdCol) $data[$refIdCol] = null;
@@ -424,38 +536,34 @@ protected function recordOpeningStock(int $productId, float $qty, int $storeId, 
                 $data['qty_in']  = $qty;
                 $data['qty_out'] = 0;
             } elseif ($hasQtyDir) {
-                $data['qty']      = $qty;
-                $data['direction']= 1;    // 1 = masuk
+                $data['qty'] = $qty; $data['direction'] = 1;
             } elseif ($hasQtyOnly) {
-                $data['qty'] = $qty;      // asumsi masuk
+                $data['qty'] = $qty;
             } else {
-                // tidak ada kolom qty yang cocok -> skip ledger
                 $data = null;
             }
 
-            // biaya/kolom opsional
             if ($data !== null) {
-                if ($has('unit_cost'))         $data['unit_cost']         = $cost;
-                if ($has('unit_price'))        $data['unit_price']        = $cost;
-                if ($has('subtotal_cost'))     $data['subtotal_cost']     = $cost * $qty;
-                if ($has('estimated_cost'))    $data['estimated_cost']    = $cost * $qty;
-                if ($has('note'))              $data['note']              = $asAdjustment ? 'Import excel (adjust)' : 'Import excel (opening)';
-                if ($has('created_at'))        $data['created_at']        = $now;
-                if ($has('updated_at'))        $data['updated_at']        = $now;
+                foreach (['unit_cost','unit_price'] as $k) if ($has($k)) $data[$k] = $cost;
+                if ($has('subtotal_cost'))  $data['subtotal_cost']  = $cost * $qty;
+                if ($has('estimated_cost')) $data['estimated_cost'] = $cost * $qty;
+                if ($has('note'))           $data['note'] = $asAdjustment ? 'Import excel (adjust)' : 'Import excel (opening)';
+                if ($has('created_at'))     $data['created_at'] = $now;
+                if ($has('updated_at'))     $data['updated_at'] = $now;
 
-                \DB::table('stock_ledger')->insert($data);
+                DB::table('stock_ledger')->insert($data);
             }
         } catch (\Throwable $e) {
-            \Log::warning('stock_ledger insert skipped: '.$e->getMessage());
+            Log::warning('stock_ledger insert skipped: '.$e->getMessage());
         }
     }
 
     // ===== snapshot products.stock agar UI langsung terlihat =====
-    if (\Illuminate\Support\Facades\Schema::hasColumn('products', 'stock')) {
-        \DB::table('products')
+    if (Schema::hasColumn('products', 'stock')) {
+        DB::table('products')
             ->where('id', $productId)
             ->update([
-                'stock'      => \DB::raw('COALESCE(stock,0) + '.((float)$qty)),
+                'stock'      => DB::raw('COALESCE(stock,0) + '.((float)$qty)),
                 'updated_at' => $now,
             ]);
     }

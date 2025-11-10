@@ -16,6 +16,8 @@ use App\Http\Controllers\StoreLocationController;
 use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\ProductImportController;
+use App\Http\Controllers\ReportController;
+use App\Http\Controllers\StockReconciliationController as RC;
 
 /*
 |--------------------------------------------------------------------------
@@ -78,6 +80,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/{sale}',           [SaleController::class, 'show'])->whereNumber('sale');
         Route::post('/',                [SaleController::class, 'store']); // transaksi POS
     });
+    // routes/api.php
+    Route::get('/reports/sales-items', [ReportController::class, 'salesItems']);
+
 
     // ---------- STAFF (admin + kasir) ----------
     Route::middleware('role:admin,kasir')->group(function () {
@@ -149,6 +154,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Sales — void
         Route::post('sales/{sale}/void',        [SaleController::class, 'void'])->whereNumber('sale');
+        
 
         // Inventory (produk spesifik)
         Route::get('/inventory/products',                 [InventoryController::class, 'inventoryProducts']);
@@ -172,6 +178,15 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('/roles/options',     [UserController::class, 'roleOptions']);
         });
 
-        
+        // ✅ TARUH DULUAN
+        Route::get('/stock-reconciliation/template', [RC::class, 'template'])
+            ->name('stock-reconciliation.template');
+        Route::get   ('/stock-reconciliation',              [RC::class, 'index']);
+        Route::post  ('/stock-reconciliation',              [RC::class, 'store']);
+        Route::get   ('/stock-reconciliation/{id}',         [RC::class, 'show'])->whereNumber('id');
+        Route::post  ('/stock-reconciliation/{id}/upload',  [RC::class, 'upload'])->whereNumber('id');
+        Route::post  ('/stock-reconciliation/{id}/apply',   [RC::class, 'apply'])->whereNumber('id');
+        Route::delete('/stock-reconciliation/{id}',         [RC::class, 'destroy'])->whereNumber('id');
+        // routes/api.php
     });
 });

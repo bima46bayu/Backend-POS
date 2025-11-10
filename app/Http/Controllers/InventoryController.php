@@ -18,31 +18,66 @@ class InventoryController extends Controller
     }
 
     /** Ambil Opening dari IMPORT_INIT layers */
-    private function openingFromImportInit(int $productId, ?int $storeId = null): array
+    /**
+     * Baca opening dari inventory_layers untuk berbagai varian sumber opening.
+     * Menerima: IMPORT_INIT (baru), IMPORT_OPEN (import excel), ADD/ADD_PRODUCT (legacy seed).
+     */
+    protected function openingFromImportInit(int $productId, ?int $storeId = null): array
     {
-        if (!Schema::hasTable('inventory_layers')) return ['qty'=>0,'cost'=>0];
-
-        // Landed -> cost -> price
-        $landedExpr = 'COALESCE(unit_landed_cost, unit_cost, unit_price, 0)';
-
-        $q = DB::table('inventory_layers')
-            ->where('product_id', $productId)
-            ->where('source_type', 'IMPORT_INIT');
-
-        if ($storeId !== null) {
-            $q->where('store_location_id', $storeId);
+        if (!Schema::hasTable('inventory_layers')) {
+            return ['qty' => 0.0, 'cost' => 0.0];
         }
 
-        $row = $q->selectRaw("
-            COALESCE(SUM(qty_initial),0) as oqty,
-            COALESCE(SUM(qty_initial * {$landedExpr}),0) as ocost
-        ")->first();
+        $cols  = Schema::getColumnListing('inventory_layers');
+        $has   = fn(string $n) => in_array($n, $cols, true);
+        $first = function (array $cands) use ($cols): ?string {
+            foreach ($cands as $c) if (in_array($c, $cols, true)) return $c;
+            return null;
+        };
 
-        return [
-            'qty'  => (float)($row->oqty ?? 0),
-            'cost' => (float)($row->ocost ?? 0),
-        ];
+        $storeCol = $first(['store_location_id','store_id']);
+        $srcCol   = $first(['source_type','source','ref_type']);
+        $qtyCol   = $first(['qty_initial','initial_qty','opening_qty','qty']);    // prefer explicit opening qty
+        $remCol   = $first(['qty_remaining','remaining_qty','remaining_quantity']); // cadangan
+        $costCol  = $first(['unit_landed_cost','unit_cost','unit_price','cost']);  // prefer landed/unit_cost
+        $estCol   = $has('estimated_cost') ? 'estimated_cost' : null;
+
+        // semua varian yang dianggap "opening"
+        $openingSources = ['IMPORT_INIT','IMPORT_OPEN','IMPORT_ADJUST','ADD','ADD_PRODUCT'];
+
+        $q = DB::table('inventory_layers')->where('product_id', $productId);
+        if ($storeId !== null && $storeCol) {
+            $q->where($storeCol, $storeId);
+        }
+        if ($srcCol) {
+            $q->whereIn($srcCol, $openingSources);
+        }
+
+        // Kuantitas opening: pakai qtyCol jika ada; jika tidak ada, fallback ke remaining (umumnya sama saat opening)
+        $qtyExpr = $qtyCol ?: $remCol;
+        $openingQty = 0.0;
+        if ($qtyExpr) {
+            $openingQty = (float) (clone $q)->sum($qtyExpr);
+        }
+
+        // Biaya opening:
+        // - jika ada estimated_cost → pakai SUM(estimated_cost)
+        // - else SUM(qtyExpr * costCol)
+        $openingCost = 0.0;
+        if ($estCol) {
+            $openingCost = (float) (clone $q)->sum($estCol);
+        } else {
+            if ($qtyExpr && $costCol) {
+                // build expr aman (nama kolom tidak bisa di-bind parameter)
+                $openingCost = (float) (clone $q)
+                    ->selectRaw('COALESCE(SUM((' . $qtyExpr . ') * (' . $costCol . ')),0) AS c')
+                    ->value('c');
+            }
+        }
+
+        return ['qty' => $openingQty, 'cost' => $openingCost];
     }
+
 
     /**
      * GET /api/inventory/layers
@@ -444,4 +479,5 @@ public function productLogs($productId, Request $r)
         ]);
     }
 
+    
 }
