@@ -250,234 +250,238 @@ class InventoryController extends Controller
      * GET /api/inventory/products/{id}/logs
      * Query: date_from?, date_to?, store_id?, ref_type?, per_page?, page?, hide_cost?
      */
-public function productLogs($productId, Request $r)
-{
-    if (!Schema::hasTable('stock_ledger')) {
+    public function productLogs($productId, Request $r)
+    {
+        if (!Schema::hasTable('stock_ledger')) {
+            return response()->json([
+                'items' => [],
+                'meta'  => ['current_page'=>1,'per_page'=>0,'last_page'=>1,'total'=>0],
+                'links' => [],
+            ]);
+        }
+
+        $q = DB::table('stock_ledger')->where('product_id', (int)$productId)
+            ->when($r->filled('store_id'),  fn($qq)=>$qq->where('store_location_id',(int)$r->input('store_id')))
+            ->when($r->filled('ref_type'),  fn($qq)=>$qq->where('ref_type',$r->input('ref_type')))
+            ->when($r->filled('date_from'), fn($qq)=>$qq->where('created_at','>=',$r->input('date_from').' 00:00:00'))
+            ->when($r->filled('date_to'),   fn($qq)=>$qq->where('created_at','<=',$r->input('date_to').' 23:59:59'))
+            ->orderBy('created_at')->orderBy('id');
+
+        $rows = $q->get([
+            'id','product_id','store_location_id','layer_id','user_id',
+            'ref_type','ref_id','direction','qty',
+            'unit_cost','unit_price','subtotal_cost',
+            'note','created_at',
+        ]);
+
+        $hideCost = (bool)$r->boolean('hide_cost', false);
+
+        // Running balance dgn arah yang sudah DINORMALISASI
+        $bal = 0;
+        $rows = $rows->map(function ($row) use (&$bal, $hideCost) {
+
+            $ref = strtoupper((string)$row->ref_type);
+
+            // === NORMALISASI DIRECTION ===
+            // - SALE, DESTROY  -> -1 (keluar)
+            // - SALE_VOID      -> +1 (masuk kembali)  <<< PERUBAHAN PENTING
+            // - GR, ADD        -> +1 (masuk)
+            // - lainnya        -> pakai direction asal (fallback 1 jika null)
+            $dir = match ($ref) {
+                'SALE'      => -1,
+                'DESTROY'   => -1,
+                'SALE_VOID' => +1,   // force masuk
+                'GR', 'ADD' => +1,
+                default     => (int)($row->direction ?? 1),
+            };
+
+            $qty        = (float)($row->qty ?? 0);
+            $unitPrice  = (float)($row->unit_price ?? 0);
+            $unitCost   = (float)($row->unit_cost  ?? 0);
+
+            // Fallback subtotal_cost jika belum ada
+            $subtotalCost = isset($row->subtotal_cost) && $row->subtotal_cost !== null
+                ? (float)$row->subtotal_cost
+                : ($qty * $unitCost);
+
+            // Update running balance pakai direction yang sudah dinormalisasi
+            $bal += ($dir * $qty);
+            $row->running_balance = $bal;
+
+            // Simpan nilai yg sudah dibetulkan
+            $row->direction     = $dir;
+            $row->subtotal_cost = $subtotalCost;
+
+            // Profitability hanya untuk SALE keluar (bukan SALE_VOID)
+            $isSale = ($ref === 'SALE' && $dir === -1);
+            $row->line_revenue = $isSale ? ($qty * $unitPrice) : 0.0;
+            $row->line_cogs    = $isSale ? ($qty * $unitCost)  : 0.0;
+            $row->line_gross   = $row->line_revenue - $row->line_cogs;
+
+            if ($hideCost) {
+                unset($row->unit_cost, $row->subtotal_cost, $row->line_cogs);
+            }
+
+            return $row;
+        });
+
+        // Paginate manual (biar running_balance konsisten)
+        $per   = min(max((int)$r->input('per_page', 50), 1), 200);
+        $page  = max((int)$r->input('page', 1), 1);
+        $total = $rows->count();
+        $items = $rows->slice(($page - 1) * $per, $per)->values();
+
         return response()->json([
-            'items' => [],
-            'meta'  => ['current_page'=>1,'per_page'=>0,'last_page'=>1,'total'=>0],
+            'items' => $items,
+            'meta'  => [
+                'current_page' => $page,
+                'per_page'     => $per,
+                'last_page'    => (int)ceil($total / $per),
+                'total'        => $total,
+            ],
             'links' => [],
         ]);
     }
 
-    $q = DB::table('stock_ledger')->where('product_id', (int)$productId)
-        ->when($r->filled('store_id'),  fn($qq)=>$qq->where('store_location_id',(int)$r->input('store_id')))
-        ->when($r->filled('ref_type'),  fn($qq)=>$qq->where('ref_type',$r->input('ref_type')))
-        ->when($r->filled('date_from'), fn($qq)=>$qq->where('created_at','>=',$r->input('date_from').' 00:00:00'))
-        ->when($r->filled('date_to'),   fn($qq)=>$qq->where('created_at','<=',$r->input('date_to').' 23:59:59'))
-        ->orderBy('created_at')->orderBy('id');
-
-    $rows = $q->get([
-        'id','product_id','store_location_id','layer_id','user_id',
-        'ref_type','ref_id','direction','qty',
-        'unit_cost','unit_price','subtotal_cost',
-        'note','created_at',
-    ]);
-
-    $hideCost = (bool)$r->boolean('hide_cost', false);
-
-    // Running balance dgn arah yang sudah DINORMALISASI
-    $bal = 0;
-    $rows = $rows->map(function ($row) use (&$bal, $hideCost) {
-
-        $ref = strtoupper((string)$row->ref_type);
-
-        // === NORMALISASI DIRECTION ===
-        // - SALE, DESTROY  -> -1 (keluar)
-        // - SALE_VOID      -> +1 (masuk kembali)  <<< PERUBAHAN PENTING
-        // - GR, ADD        -> +1 (masuk)
-        // - lainnya        -> pakai direction asal (fallback 1 jika null)
-        $dir = match ($ref) {
-            'SALE'      => -1,
-            'DESTROY'   => -1,
-            'SALE_VOID' => +1,   // force masuk
-            'GR', 'ADD' => +1,
-            default     => (int)($row->direction ?? 1),
-        };
-
-        $qty        = (float)($row->qty ?? 0);
-        $unitPrice  = (float)($row->unit_price ?? 0);
-        $unitCost   = (float)($row->unit_cost  ?? 0);
-
-        // Fallback subtotal_cost jika belum ada
-        $subtotalCost = isset($row->subtotal_cost) && $row->subtotal_cost !== null
-            ? (float)$row->subtotal_cost
-            : ($qty * $unitCost);
-
-        // Update running balance pakai direction yang sudah dinormalisasi
-        $bal += ($dir * $qty);
-        $row->running_balance = $bal;
-
-        // Simpan nilai yg sudah dibetulkan
-        $row->direction     = $dir;
-        $row->subtotal_cost = $subtotalCost;
-
-        // Profitability hanya untuk SALE keluar (bukan SALE_VOID)
-        $isSale = ($ref === 'SALE' && $dir === -1);
-        $row->line_revenue = $isSale ? ($qty * $unitPrice) : 0.0;
-        $row->line_cogs    = $isSale ? ($qty * $unitCost)  : 0.0;
-        $row->line_gross   = $row->line_revenue - $row->line_cogs;
-
-        if ($hideCost) {
-            unset($row->unit_cost, $row->subtotal_cost, $row->line_cogs);
-        }
-
-        return $row;
-    });
-
-    // Paginate manual (biar running_balance konsisten)
-    $per   = min(max((int)$r->input('per_page', 50), 1), 200);
-    $page  = max((int)$r->input('page', 1), 1);
-    $total = $rows->count();
-    $items = $rows->slice(($page - 1) * $per, $per)->values();
-
-    return response()->json([
-        'items' => $items,
-        'meta'  => [
-            'current_page' => $page,
-            'per_page'     => $per,
-            'last_page'    => (int)ceil($total / $per),
-            'total'        => $total,
-        ],
-        'links' => [],
-    ]);
-}
-
-
-    /**
-     * GET /api/inventory/products/{id}/summary
-     * Query: date_from?, date_to?, store_id?
-     *
-     * SKEMA BARU:
-     * - Opening: dari IMPORT_INIT layers
-     * - In     : hanya GR
-     * - Out    : SALE, DESTROY, SALE_VOID
-     * - COGS   : hanya SALE
-     */
-    public function productSummary($productId, Request $r)
-    {
-        if (!Schema::hasTable('stock_ledger')) {
-            return response()->json([
-                'product_id'       => (int)$productId,
-                'qty_in'           => 0,
-                'qty_out'          => 0,
-                'gross_revenue'    => 0,
-                'cogs'             => 0,
-                'gross_profit'     => 0,
-                'avg_sale_price'   => null,
-                'avg_cost'         => null,
-                'ending_stock'     => (int) DB::table('products')->where('id',$productId)->value('stock'),
-                'opening_qty'      => 0,
-                'opening_cost'     => 0,
-                'cost_in'          => 0,
-                'cost_out'         => 0,
-                'total_cost'       => 0,
-                'stock_cost_total' => 0,
-                'period'           => ['from'=>$r->input('date_from'),'to'=>$r->input('date_to')],
-            ]);
-        }
-
-        $storeId = $r->filled('store_id') ? (int)$r->input('store_id') : null;
-
-        // ===== 1) Opening dari IMPORT_INIT layers =====
-        $opening = $this->openingFromImportInit((int)$productId, $storeId);
-        $openingQty  = (float)$opening['qty'];
-        $openingCost = (float)$opening['cost'];
-
-        $base = DB::table('stock_ledger')->where('product_id',$productId)
-            ->when($storeId !== null, fn($qq)=>$qq->where('store_location_id',$storeId))
-            ->when($r->filled('date_from'), fn($qq)=>$qq->where('created_at','>=',$r->input('date_from').' 00:00:00'))
-            ->when($r->filled('date_to'),   fn($qq)=>$qq->where('created_at','<=',$r->input('date_to').' 23:59:59'));
-
-        // 1b) Fallback opening dari LOG ADD paling awal (jika layers = 0 atau cost = 0)
-        if ($openingQty <= 0 || $openingCost <= 0.0) {
-            $firstAddAt = (clone $base)->where('ref_type','ADD')->min('created_at');
-            if ($firstAddAt) {
-                $addOpen = (clone $base)
-                    ->where('ref_type','ADD')
-                    ->where('created_at', $firstAddAt) // grup ADD pertama sebagai opening
-                    ->selectRaw('COALESCE(SUM(qty),0) as oqty,
-                                COALESCE(SUM(COALESCE(subtotal_cost, qty * unit_cost)),0) as ocost')
-                    ->first();
-                $openingQty  = max($openingQty,  (float)($addOpen->oqty  ?? 0));
-                $openingCost = max($openingCost, (float)($addOpen->ocost ?? 0));
-            }
-        }
-
-        // ===== 2) IN: hanya GR (+1) =====
-        $qtyIn = (int)(clone $base)->where('ref_type','GR')->where('direction',+1)->sum('qty');
-        $inCost = (float)(clone $base)->where('ref_type','GR')->where('direction',+1)
-            ->selectRaw('COALESCE(SUM(COALESCE(subtotal_cost, qty * unit_cost)),0) as ic')->value('ic');
-
-        // ===== 3) Hapus efek SALE yang di-void =====
-        // Ambil sale_id yang di-void dari baris SALE_VOID (asumsi ref_id = sale_id)
-        $voidSaleIds = (clone $base)
-            ->where('ref_type', 'SALE_VOID')
-            ->pluck('ref_id')
-            ->filter()
-            ->unique()
-            ->values();
-
-        // SALE valid (tidak di-void)
-        $saleValid = (clone $base)
-            ->where('ref_type','SALE')
-            ->where('direction',-1)
-            ->when($voidSaleIds->isNotEmpty(), fn($qq)=>$qq->whereNotIn('ref_id', $voidSaleIds));
-
-        // DESTROY tetap out
-        $destroyBase = (clone $base)
-            ->where('ref_type','DESTROY')
-            ->where('direction',-1);
-
-        // OUT (qty & cost) hanya dari SALE valid + DESTROY
-        $qtyOutSale    = (int) (clone $saleValid)->sum('qty');
-        $qtyOutDestroy = (int) (clone $destroyBase)->sum('qty');
-        $qtyOut        = $qtyOutSale + $qtyOutDestroy;
-
-        $outCostSale = (float) (clone $saleValid)
-            ->selectRaw('COALESCE(SUM(COALESCE(subtotal_cost, qty * unit_cost)),0) as oc')->value('oc');
-
-        $outCostDestroy = (float) (clone $destroyBase)
-            ->selectRaw('COALESCE(SUM(COALESCE(subtotal_cost, qty * unit_cost)),0) as oc')->value('oc');
-
-        $outCostAll = $outCostSale + $outCostDestroy;
-
-        // ===== 4) Profitability (Revenue & COGS) hanya dari SALE valid =====
-        $revenue = (float) (clone $saleValid)
-            ->selectRaw('COALESCE(SUM(qty * unit_price),0) as rev')->value('rev');
-
-        $cogs = (float) (clone $saleValid)
-            ->selectRaw('COALESCE(SUM(COALESCE(subtotal_cost, qty * unit_cost)),0) as cogs')->value('cogs');
-
-        // Averages pakai jumlah SALE valid (DESTROY tidak dihitung ke rata-rata)
-        $avgSell = $qtyOutSale > 0 ? $revenue / $qtyOutSale : null;
-        $avgCost = $qtyOutSale > 0 ? $cogs    / $qtyOutSale : null;
-
-        // ===== 5) Ending & totals =====
-        $profit     = $revenue - $cogs;
-        $ending     = (int) DB::table('products')->where('id',$productId)->value('stock');
-        $costEnding = $openingCost + $inCost - $outCostAll;
-
+public function productSummary($productId, Request $r)
+{
+    if (!Schema::hasTable('stock_ledger')) {
         return response()->json([
             'product_id'       => (int)$productId,
-            'qty_in'           => $qtyIn,          // GR only
-            'qty_out'          => $qtyOut,         // SALE valid + DESTROY
-            'gross_revenue'    => $revenue,        // SALE valid saja
-            'cogs'             => $cogs,           // SALE valid saja
-            'gross_profit'     => $profit,
-            'avg_sale_price'   => $avgSell,
-            'avg_cost'         => $avgCost,
-            'ending_stock'     => $ending,
-
-            'opening_qty'      => $openingQty,
-            'opening_cost'     => $openingCost,
-            'cost_in'          => $inCost,
-            'cost_out'         => $outCostAll,
-            'total_cost'       => $costEnding,
-            'stock_cost_total' => $costEnding,
+            'qty_in'           => 0,
+            'qty_out'          => 0,
+            'gross_revenue'    => 0,
+            'cogs'             => 0,
+            'gross_profit'     => 0,
+            'avg_sale_price'   => null,
+            'avg_cost'         => null,
+            'gross_revenue_total' => 0,
+            'cogs_total'          => 0,
+            'gross_profit_total'  => 0,
+            'avg_sale_price_total'=> null,
+            'avg_cost_total'      => null,
+            'ending_stock'     => (int) DB::table('products')->where('id',$productId)->value('stock'),
+            'opening_qty'      => 0,
+            'opening_cost'     => 0,
+            'cost_in'          => 0,
+            'cost_out'         => 0,
+            'total_cost'       => 0,
+            'stock_cost_total' => 0,
             'period'           => ['from'=>$r->input('date_from'),'to'=>$r->input('date_to')],
         ]);
     }
 
-    
+    $storeId = $r->filled('store_id') ? (int)$r->input('store_id') : null;
+
+    /* ===== Opening (IMPORT_INIT) ===== */
+    $opening = $this->openingFromImportInit((int)$productId, $storeId);
+    $openingQty  = (float)($opening['qty'] ?? 0);
+    $openingCost = (float)($opening['cost'] ?? 0);
+
+    $base = DB::table('stock_ledger')->where('product_id',$productId)
+        ->when($storeId !== null, fn($q)=>$q->where('store_location_id',$storeId))
+        ->when($r->filled('date_from'), fn($q)=>$q->where('created_at','>=',$r->input('date_from').' 00:00:00'))
+        ->when($r->filled('date_to'), fn($q)=>$q->where('created_at','<=',$r->input('date_to').' 23:59:59'));
+
+    /* ================= SALE ONLY ================= */
+    $voidSaleIds = (clone $base)->where('ref_type','SALE_VOID')->pluck('ref_id')->filter()->unique()->values();
+
+    $saleValid = (clone $base)
+        ->where('ref_type','SALE')
+        ->where('direction', -1)
+        ->when($voidSaleIds->isNotEmpty(), fn($q)=>$q->whereNotIn('ref_id',$voidSaleIds));
+
+    $qtyOutSale = (int) (clone $saleValid)->sum('qty');
+
+    $grossRevenue = (float) (clone $saleValid)
+        ->selectRaw('COALESCE(SUM(qty * COALESCE(unit_price,0)),0) AS rev')
+        ->value('rev');
+
+    $cogs = (float) (clone $saleValid)
+        ->selectRaw('COALESCE(SUM(COALESCE(subtotal_cost, qty * COALESCE(unit_cost,0))),0) AS cgs')
+        ->value('cgs');
+
+    $grossProfit = $grossRevenue - $cogs;
+    $avgSalePrice = $qtyOutSale > 0 ? $grossRevenue / $qtyOutSale : null;
+    $avgCost      = $qtyOutSale > 0 ? $cogs / $qtyOutSale : null;
+
+    /* ================= ALL TRANSACTIONS (tanpa ADD/IMPORT_INIT) ================= */
+    $inTypes  = ['GR','RECON_ADJUST']; // exclude ADD
+    $outTypes = ['SALE','DESTROY','RECON_ADJUST']; // exclude ADD
+
+    $qtyIn = (int) (clone $base)
+        ->whereIn('ref_type',$inTypes)
+        ->where('direction',+1)
+        ->sum('qty');
+
+    $costIn = (float) (clone $base)
+        ->whereIn('ref_type',$inTypes)
+        ->where('direction',+1)
+        ->selectRaw('COALESCE(SUM(COALESCE(subtotal_cost, qty * unit_cost)),0) AS ic')
+        ->value('ic');
+
+    $qtyOut = (int) (clone $base)
+        ->whereIn('ref_type',$outTypes)
+        ->where('direction',-1)
+        ->sum('qty');
+
+    $costOut = (float) (clone $base)
+        ->whereIn('ref_type',$outTypes)
+        ->where('direction',-1)
+        ->selectRaw('COALESCE(SUM(COALESCE(subtotal_cost, qty * unit_cost)),0) AS oc')
+        ->value('oc');
+
+    // Gross revenue total: hanya transaksi yang punya harga jual (SALE & RECON_ADJUST OUT optional)
+    $grossRevenueTotal = (float) (clone $base)
+        ->whereIn('ref_type',['SALE','RECON_ADJUST'])
+        ->selectRaw('COALESCE(SUM(qty * COALESCE(unit_price,0)),0) AS rev')
+        ->value('rev');
+
+    // COGS total: semua transaksi keluar, tanpa ADD
+    $cogsTotal = (float) (clone $base)
+        ->whereIn('ref_type',$outTypes)
+        ->where('direction',-1)
+        ->selectRaw('COALESCE(SUM(COALESCE(subtotal_cost, qty * unit_cost)),0) AS cg')
+        ->value('cg');
+
+    $grossProfitTotal = $grossRevenueTotal - $cogsTotal;
+    $avgSalePriceTotal = $qtyOut > 0 ? $grossRevenueTotal / $qtyOut : null;
+    $avgCostTotal      = $qtyOut > 0 ? $cogsTotal / $qtyOut : null;
+
+    /* ================= STOCK POSITION ================= */
+    $endingStock = (int) DB::table('products')->where('id',$productId)->value('stock');
+    $costEnding = $openingCost + $costIn - $costOut;
+
+    return response()->json([
+        'product_id'       => (int)$productId,
+
+        // SALE only
+        'gross_revenue'    => $grossRevenue,
+        'cogs'             => $cogs,
+        'gross_profit'     => $grossProfit,
+        'avg_sale_price'   => $avgSalePrice,
+        'avg_cost'         => $avgCost,
+
+        // Semua transaksi (tanpa ADD/IMPORT_INIT)
+        'gross_revenue_total' => $grossRevenueTotal,
+        'cogs_total'          => $cogsTotal,
+        'gross_profit_total'  => $grossProfitTotal,
+        'avg_sale_price_total'=> $avgSalePriceTotal,
+        'avg_cost_total'      => $avgCostTotal,
+
+        // Stock movement & posisi akhir
+        'qty_in'           => $qtyIn,
+        'qty_out'          => $qtyOut,
+        'opening_qty'      => $openingQty,
+        'opening_cost'     => $openingCost,
+        'cost_in'          => $costIn,
+        'cost_out'         => $costOut,
+        'total_cost'       => $costEnding,
+        'stock_cost_total' => $costEnding,
+        'ending_stock'     => $endingStock,
+
+        'period'           => ['from'=>$r->input('date_from'),'to'=>$r->input('date_to')],
+    ]);
+}
+
 }

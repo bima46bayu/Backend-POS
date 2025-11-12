@@ -17,7 +17,7 @@ use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\ProductImportController;
 use App\Http\Controllers\ReportController;
-use App\Http\Controllers\StockReconciliationController as RC;
+use App\Http\Controllers\StockReconciliationController;
 
 /*
 |--------------------------------------------------------------------------
@@ -179,14 +179,16 @@ Route::middleware('auth:sanctum')->group(function () {
         });
 
         // ✅ TARUH DULUAN
-        Route::get('/stock-reconciliation/template', [RC::class, 'template'])
-            ->name('stock-reconciliation.template');
-        Route::get   ('/stock-reconciliation',              [RC::class, 'index']);
-        Route::post  ('/stock-reconciliation',              [RC::class, 'store']);
-        Route::get   ('/stock-reconciliation/{id}',         [RC::class, 'show'])->whereNumber('id');
-        Route::post  ('/stock-reconciliation/{id}/upload',  [RC::class, 'upload'])->whereNumber('id');
-        Route::post  ('/stock-reconciliation/{id}/apply',   [RC::class, 'apply'])->whereNumber('id');
-        Route::delete('/stock-reconciliation/{id}',         [RC::class, 'destroy'])->whereNumber('id');
+        Route::prefix('stock-reconciliation')->group(function () {
+            Route::get   ('',                    [StockReconciliationController::class, 'index']);
+            Route::post  ('',                    [StockReconciliationController::class, 'store']);   // create + seed
+            Route::get   ('/{id}',               [StockReconciliationController::class, 'show']);    // detail
+            Route::patch ('/{id}/items',         [StockReconciliationController::class, 'bulkUpdateItems']); // inline manual
+            Route::get   ('/{id}/template',      [StockReconciliationController::class, 'template']); // download xlsx (opsional)
+            Route::post  ('/{id}/upload',        [StockReconciliationController::class, 'upload']);   // upload xlsx (opsional)
+            Route::post  ('/{id}/apply',         [StockReconciliationController::class, 'apply']);    // commit → ledger/layers
+            Route::delete('/{id}',               [StockReconciliationController::class, 'destroy']);  // hapus DRAFT
+        });
         // routes/api.php
     });
 });
