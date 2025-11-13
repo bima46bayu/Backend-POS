@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Validator;
 
 class InventoryController extends Controller
 {
@@ -341,6 +342,230 @@ class InventoryController extends Controller
             ],
             'links' => [],
         ]);
+    }
+
+    // ==== HELPER: logic summary per produk (tanpa response) ====
+    private function buildProductSummaryArray(int $productId, Request $r): array
+    {
+        if (!Schema::hasTable('stock_ledger')) {
+            return [
+                'product_id'          => (int)$productId,
+                'qty_in'              => 0,
+                'qty_out'             => 0,
+                'gross_revenue'       => 0,
+                'cogs'                => 0,
+                'gross_profit'        => 0,
+                'avg_sale_price'      => null,
+                'avg_cost'            => null,
+                'gross_revenue_total' => 0,
+                'cogs_total'          => 0,
+                'gross_profit_total'  => 0,
+                'avg_sale_price_total'=> null,
+                'avg_cost_total'      => null,
+                'ending_stock'        => (int) DB::table('products')->where('id',$productId)->value('stock'),
+                'opening_qty'         => 0,
+                'opening_cost'        => 0,
+                'cost_in'             => 0,
+                'cost_out'            => 0,
+                'total_cost'          => 0,
+                'stock_cost_total'    => 0,
+                'period'              => ['from'=>$r->input('date_from'),'to'=>$r->input('date_to')],
+            ];
+        }
+
+        $storeId = $r->filled('store_id') ? (int)$r->input('store_id') : null;
+
+        // ===== Opening (IMPORT_INIT)
+        if (!method_exists($this, 'openingFromImportInit')) {
+            // fallback aman kalau belum ada fungsinya
+            $opening = ['qty' => 0, 'cost' => 0];
+        } else {
+            $opening = $this->openingFromImportInit((int)$productId, $storeId);
+        }
+        $openingQty  = (float)($opening['qty'] ?? 0);
+        $openingCost = (float)($opening['cost'] ?? 0);
+
+        $base = DB::table('stock_ledger')->where('product_id',$productId)
+            ->when($storeId !== null, fn($q)=>$q->where('store_location_id',$storeId))
+            ->when($r->filled('date_from'), fn($q)=>$q->where('created_at','>=',$r->input('date_from').' 00:00:00'))
+            ->when($r->filled('date_to'),   fn($q)=>$q->where('created_at','<=',$r->input('date_to').' 23:59:59'));
+
+        // ================= SALE ONLY =================
+        $voidSaleIds = (clone $base)->where('ref_type','SALE_VOID')->pluck('ref_id')->filter()->unique()->values();
+
+        $saleValid = (clone $base)
+            ->where('ref_type','SALE')
+            ->where('direction', -1)
+            ->when($voidSaleIds->isNotEmpty(), fn($q)=>$q->whereNotIn('ref_id',$voidSaleIds));
+
+        $qtyOutSale = (int) (clone $saleValid)->sum('qty');
+
+        $grossRevenue = (float) (clone $saleValid)
+            ->selectRaw('COALESCE(SUM(qty * COALESCE(unit_price,0)),0) AS rev')
+            ->value('rev');
+
+        $cogs = (float) (clone $saleValid)
+            ->selectRaw('COALESCE(SUM(COALESCE(subtotal_cost, qty * COALESCE(unit_cost,0))),0) AS cgs')
+            ->value('cgs');
+
+        $grossProfit   = $grossRevenue - $cogs;
+        $avgSalePrice  = $qtyOutSale > 0 ? $grossRevenue / $qtyOutSale : null;
+        $avgCost       = $qtyOutSale > 0 ? $cogs / $qtyOutSale       : null;
+
+        /* ================= ALL TRANSACTIONS (tanpa ADD/IMPORT_INIT) ================= */
+        $inTypes  = ['GR','RECON_ADJUST']; // exclude ADD
+        $outTypes = ['SALE','DESTROY','RECON_ADJUST']; // exclude ADD
+
+        $qtyIn = (int) (clone $base)
+            ->whereIn('ref_type',$inTypes)
+            ->where('direction',+1)
+            ->sum('qty');
+
+        $costIn = (float) (clone $base)
+            ->whereIn('ref_type',$inTypes)
+            ->where('direction',+1)
+            ->selectRaw('COALESCE(SUM(COALESCE(subtotal_cost, qty * unit_cost)),0) AS ic')
+            ->value('ic');
+
+        $qtyOut = (int) (clone $base)
+            ->whereIn('ref_type',$outTypes)
+            ->where('direction',-1)
+            ->sum('qty');
+
+        $costOut = (float) (clone $base)
+            ->whereIn('ref_type',$outTypes)
+            ->where('direction',-1)
+            ->selectRaw('COALESCE(SUM(COALESCE(subtotal_cost, qty * unit_cost)),0) AS oc')
+            ->value('oc');
+
+        $grossRevenueTotal = (float) (clone $base)
+            ->whereIn('ref_type',['SALE','RECON_ADJUST'])
+            ->selectRaw('COALESCE(SUM(qty * COALESCE(unit_price,0)),0) AS rev')
+            ->value('rev');
+
+        $cogsTotal = (float) (clone $base)
+            ->whereIn('ref_type',$outTypes)
+            ->where('direction',-1)
+            ->selectRaw('COALESCE(SUM(COALESCE(subtotal_cost, qty * unit_cost)),0) AS cg')
+            ->value('cg');
+
+        $grossProfitTotal  = $grossRevenueTotal - $cogsTotal;
+        $avgSalePriceTotal = $qtyOut > 0 ? $grossRevenueTotal / $qtyOut : null;
+        $avgCostTotal      = $qtyOut > 0 ? $cogsTotal       / $qtyOut : null;
+
+        /* ================= STOCK POSITION ================= */
+        $endingStock = (int) DB::table('products')->where('id',$productId)->value('stock');
+        $costEnding  = $openingCost + $costIn - $costOut;
+
+        return [
+            'product_id'            => (int)$productId,
+
+            // SALE only
+            'gross_revenue'         => $grossRevenue,
+            'cogs'                  => $cogs,
+            'gross_profit'          => $grossProfit,
+            'avg_sale_price'        => $avgSalePrice,
+            'avg_cost'              => $avgCost,
+
+            // Semua transaksi (tanpa ADD/IMPORT_INIT)
+            'gross_revenue_total'   => $grossRevenueTotal,
+            'cogs_total'            => $cogsTotal,
+            'gross_profit_total'    => $grossProfitTotal,
+            'avg_sale_price_total'  => $avgSalePriceTotal,
+            'avg_cost_total'        => $avgCostTotal,
+
+            // Stock movement & posisi akhir
+            'qty_in'                => $qtyIn,
+            'qty_out'               => $qtyOut,
+            'opening_qty'           => $openingQty,
+            'opening_cost'          => $openingCost,
+            'cost_in'               => $costIn,
+            'cost_out'              => $costOut,
+            'total_cost'            => $costEnding,
+            'stock_cost_total'      => $costEnding,
+            'ending_stock'          => $endingStock,
+
+            'period'                => ['from'=>$r->input('date_from'),'to'=>$r->input('date_to')],
+        ];
+    }
+
+    // ==== BATCH: GET /api/inventory/products/summary?product_ids=1,2,3&date_from=...&date_to=...&store_id=... ====
+    public function productSummaryBatch(Request $r)
+    {
+        try {
+            $v = Validator::make($r->all(), [
+                'product_ids' => ['required'], // string "1,2,3" atau array
+                'date_from'   => ['nullable', 'date'],
+                'date_to'     => ['nullable', 'date'],
+                'from'        => ['nullable', 'date'],
+                'to'          => ['nullable', 'date'],
+                'store_id'    => ['nullable', 'integer'],
+                'max'         => ['nullable', 'integer', 'min:1', 'max:1000'],
+            ]);
+            if ($v->fails()) {
+                return response()->json(['message'=>'Invalid params','errors'=>$v->errors()], 422);
+            }
+
+            // kompat: from/to -> date_from/date_to
+            if ($r->filled('from') && !$r->filled('date_from')) $r->merge(['date_from' => $r->input('from')]);
+            if ($r->filled('to')   && !$r->filled('date_to'))   $r->merge(['date_to'   => $r->input('to')]);
+
+            $idsRaw = $r->input('product_ids');
+            $ids = is_array($idsRaw)
+                ? $idsRaw
+                : (is_string($idsRaw) ? preg_split('/[,\s]+/', $idsRaw, -1, PREG_SPLIT_NO_EMPTY) : []);
+            $ids = array_values(array_unique(array_map('intval', $ids)));
+
+            if (empty($ids)) {
+                return response()->json([
+                    'items'  => [],
+                    'totals' => ['cogs'=>0, 'gross_profit'=>0],
+                    'count'  => 0,
+                    'meta'   => [
+                        'from' => $r->input('date_from'),
+                        'to'   => $r->input('date_to'),
+                        'store_id' => $r->input('store_id'),
+                    ],
+                ]);
+            }
+
+            $max = min((int)($r->input('max', 500)), 1000);
+            $ids = array_slice($ids, 0, $max);
+
+            $items = [];
+            $totalCogs = 0.0;
+            $totalGp   = 0.0;
+
+            foreach ($ids as $pid) {
+                $row = $this->buildProductSummaryArray((int)$pid, $r);
+                $cogs = (float)($row['cogs'] ?? 0);
+                $gp   = (float)($row['gross_profit'] ?? 0);
+                $items[] = [
+                    'product_id'   => (int)$pid,
+                    'cogs'         => $cogs,
+                    'gross_profit' => $gp,
+                ];
+                $totalCogs += $cogs;
+                $totalGp   += $gp;
+            }
+
+            return response()->json([
+                'items'  => $items,
+                'totals' => ['cogs' => $totalCogs, 'gross_profit' => $totalGp],
+                'count'  => count($items),
+                'meta'   => [
+                    'from' => $r->input('date_from'),
+                    'to'   => $r->input('date_to'),
+                    'store_id' => $r->input('store_id'),
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            report($e);
+            return response()->json([
+                'message' => 'Batch summary error',
+                'error'   => $e->getMessage(),
+            ], 500);
+        }
     }
 
 public function productSummary($productId, Request $r)

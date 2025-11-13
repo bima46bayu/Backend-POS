@@ -160,6 +160,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/inventory/products',                 [InventoryController::class, 'inventoryProducts']);
         Route::get('/inventory/products/{id}/logs',       [InventoryController::class, 'productLogs'])->whereNumber('id');
         Route::get('/inventory/products/{id}/summary',    [InventoryController::class, 'productSummary'])->whereNumber('id');
+        Route::get('/inventory/products/summary',         [InventoryController::class, 'productSummaryBatch']);
 
         // === Master User ===
         Route::prefix('users')->group(function () {
