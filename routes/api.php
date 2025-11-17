@@ -19,6 +19,10 @@ use App\Http\Controllers\ProductImportController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\StockReconciliationController;
 
+
+Route::options('{any}', function () {
+    return response()->noContent(); // 204
+})->where('any', '.*');
 /*
 |--------------------------------------------------------------------------
 | PUBLIC (tanpa login)
