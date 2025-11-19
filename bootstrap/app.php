@@ -4,7 +4,6 @@ use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Middleware\HandleCors;
-use App\Http\Middleware\RoleMiddleware;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -13,20 +12,16 @@ return Application::configure(basePath: dirname(__DIR__))
         commands: __DIR__ . '/../routes/console.php',
         health: '/up',
     )
-    ->withMiddleware(function (Middleware $middleware): void {
-        // Middleware global (jalan di semua request)
-        $middleware->use([
-            HandleCors::class,
-            // kalau mau, kamu bisa tambah middleware lain di sini
-            // misal TrustProxies, TrimStrings, dsb.
-        ]);
+    ->withMiddleware(function (Middleware $middleware) {
+        // CORS global
+        $middleware->append(HandleCors::class);
 
-        // Alias middleware
         $middleware->alias([
-            'role' => RoleMiddleware::class,
+            'role' => \App\Http\Middleware\RoleMiddleware::class, // <<< PAKAI INI
+            // kalau sebelumnya kamu isi Spatie\Permission\Middleware\RoleMiddleware, HAPUS / GANTI
         ]);
     })
-    ->withExceptions(function (Exceptions $exceptions): void {
-        //
+    ->withExceptions(function (Exceptions $exceptions) {
+        // boleh kosong
     })
     ->create();

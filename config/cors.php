@@ -1,21 +1,23 @@
 <?php
 
 return [
-    'paths' => ['api/*'],
+
+    'paths' => ['api/*', 'sanctum/csrf-cookie'],
+
     'allowed_methods' => ['*'],
-    'allowed_origins' => [
-        env('FRONTEND_URL', 'https://peaceful-williams.202-10-44-26.plesk.page'),
-    ],
+
+    // Untuk testing, buka dulu semua origin
+    'allowed_origins' => ['*'],
+    // nanti kalau sudah aman, bisa diganti:
+    // 'allowed_origins' => ['http://localhost:3000'],
+
     'allowed_origins_patterns' => [],
-    'allowed_headers' => [
-        'Content-Type',
-        'X-Requested-With',
-        'Accept',
-        'Origin',
-        'Authorization',
-    ],
+
+    'allowed_headers' => ['*'],
+
     'exposed_headers' => [],
+
     'max_age' => 0,
+
     'supports_credentials' => false,
 ];
-
