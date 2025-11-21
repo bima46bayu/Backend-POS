@@ -1,14 +1,14 @@
-Options +FollowSymLinks
-RewriteEngine Off
+# .htaccess di public/uploads
+<IfModule mod_headers.c>
+    Header set Access-Control-Allow-Origin "*"
+</IfModule>
 
-# Allow image files
+# Allow image files (Apache 2.4+)
 <FilesMatch "\.(jpg|jpeg|png|gif|svg|webp)$">
-    Order Allow,Deny
-    Allow from all
+    Require all granted
 </FilesMatch>
 
 # Block PHP files
 <FilesMatch "\.php$">
-    Order Allow,Deny
-    Deny from all
+    Require all denied
 </FilesMatch>
