@@ -21,7 +21,7 @@ class StoreLocationController extends Controller
             });
         }
 
-        return $q->orderBy('name')->paginate($perPage);
+        return $q->orderBy('created_at')->paginate($perPage);
     }
 
     public function show($id)

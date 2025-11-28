@@ -24,7 +24,7 @@ class SubCategoryController extends Controller
         $perPage = (int) $request->query('per_page', 15);
         $perPage = $perPage > 100 ? 100 : ($perPage < 1 ? 15 : $perPage);
 
-        return $q->orderBy('name')->paginate($perPage);
+        return $q->orderBy('created_at')->paginate($perPage);
     }
 
     // GET /api/categories/{category}/sub-categories
@@ -60,35 +60,41 @@ class SubCategoryController extends Controller
     }
 
     // PATCH/PUT /api/sub-categories/{sub_category}
-    public function update(Request $request, SubCategory $sub_category)
+    // PUT/PATCH /api/sub-categories/{subCategory}
+    public function update(Request $request, SubCategory $subCategory)
     {
         $data = $request->validate([
             'category_id' => 'sometimes|required|exists:categories,id',
             'name'        => 'sometimes|required|string|max:100',
         ]);
 
-        // validasi kombinasi (category_id + name) unik
-        $newCatId = $data['category_id'] ?? $sub_category->category_id;
-        $newName  = $data['name'] ?? $sub_category->name;
+        $newCatId = $data['category_id'] ?? $subCategory->category_id;
+        $newName  = $data['name'] ?? $subCategory->name;
 
         $exists = SubCategory::where('category_id', $newCatId)
-                    ->where('name', $newName)
-                    ->where('id', '!=', $sub_category->id)
-                    ->exists();
+            ->where('name', $newName)
+            ->where('id', '!=', $subCategory->id)
+            ->exists();
+
         if ($exists) {
-            return response()->json(['message' => 'Sub category name already exists in this category'], 422);
+            return response()->json([
+                'message' => 'Sub category name already exists in this category'
+            ], 422);
         }
 
-        $sub_category->update($data);
-        return response()->json($sub_category->load('category:id,name'));
+        $subCategory->update($data);
+
+        return response()->json($subCategory->load('category:id,name'));
     }
 
-    // DELETE /api/sub-categories/{sub_category}
-    public function destroy(SubCategory $sub_category)
+    // DELETE /api/sub-categories/{subCategory}
+    public function destroy(SubCategory $subCategory)
     {
-        $sub_category->delete();
+        $subCategory->delete();
         return response()->json(['message' => 'Sub category deleted']);
     }
+
+
 }
 
 

@@ -127,9 +127,9 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // SubCategories CRUD
         Route::prefix('sub-categories')->group(function () {
-            Route::post('/',                    [SubCategoryController::class, 'store']);
-            Route::put('/{subCategory}',        [SubCategoryController::class, 'update'])->whereNumber('subCategory');
-            Route::delete('/{subCategory}',     [SubCategoryController::class, 'destroy'])->whereNumber('subCategory');
+            Route::post('/',                     [SubCategoryController::class, 'store']);
+            Route::put('/{sub_category}',        [SubCategoryController::class, 'update'])->whereNumber('sub_category');
+            Route::delete('/{sub_category}',     [SubCategoryController::class, 'destroy'])->whereNumber('sub_category');
         });
 
         // Products CRUD + upload (hapus route upload duplikat)

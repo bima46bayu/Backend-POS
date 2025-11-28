@@ -95,10 +95,26 @@ class UserController extends Controller
             'name'              => ['sometimes','required','string','max:150'],
             'email'             => ['sometimes','required','email','max:150', Rule::unique('users','email')->ignore($user->id)],
             'store_location_id' => ['sometimes','nullable','exists:store_locations,id'],
+            'role'              => ['sometimes', 'required', Rule::in(['admin','kasir'])],
         ]);
+
+        // Kalau request mau ubah role:
+        if (array_key_exists('role', $data)) {
+            // Cegah admin terakhir hilang
+            if ($r->user()->id === $user->id && $data['role'] !== 'admin') {
+                $hasOtherAdmin = User::where('role', 'admin')
+                    ->where('id', '!=', $user->id)
+                    ->exists();
+
+                if (! $hasOtherAdmin) {
+                    return response()->json(['message' => 'At least one admin is required'], 422);
+                }
+            }
+        }
 
         $user->update($data);
         $user->load('storeLocation')->makeHidden(['password','remember_token']);
+
         return $user;
     }
 

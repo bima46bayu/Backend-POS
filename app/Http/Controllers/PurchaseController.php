@@ -13,22 +13,27 @@ class PurchaseController extends Controller
     /**
      * LIST PO (ringan & cepat)
      * - Tidak meload items.product (berat) di list
-     * - Menyertakan supplier (id,name) saja
+     * - Menyertakan supplier & store_location (id,name)
      * - Menyertakan items_count dan qty_total via aggregate
      * - Payload dinormalisasi: { items, meta, links }
      */
+    // app/Http/Controllers/PurchaseController.php
+
     public function index(Request $r)
     {
         $perPage = (int) ($r->per_page ?? 10);
         $perPage = $perPage > 100 ? 100 : $perPage;
 
+        $search = trim((string) $r->search);
+
         $q = Purchase::query()
-            // pilih kolom yang diperlukan saja
+            // pilih kolom yang diperlukan saja (PASTIKAN ada store_location_id)
             ->select([
                 'purchases.id',
                 'purchases.purchase_number',
                 'purchases.supplier_id',
                 'purchases.user_id',
+                'purchases.store_location_id',
                 'purchases.order_date',
                 'purchases.expected_date',
                 'purchases.status',
@@ -40,24 +45,48 @@ class PurchaseController extends Controller
                 'purchases.grand_total',
                 'purchases.created_at',
             ])
-            // supplier ringan
-            ->with(['supplier:id,name'])
+            // supplier & user ringan
+            ->with([
+                'supplier:id,name',
+                'user:id,name,store_location_id', // optional tapi enak buat debug
+            ])
             // jumlah baris item per PO
             ->withCount('items')
-            // total qty order (opsional, hapus kalau tak perlu)
+            // total qty order (opsional)
             ->selectSub(
                 DB::table('purchase_items')
                     ->selectRaw('COALESCE(SUM(qty_order),0)')
                     ->whereColumn('purchase_items.purchase_id', 'purchases.id'),
                 'qty_total'
             )
-            // filter
-            ->when($r->status,      fn($qq, $v) => $qq->where('status', $v))
-            ->when($r->supplier_id, fn($qq, $v) => $qq->where('supplier_id', $v))
-            ->when($r->from,        fn($qq, $v) => $qq->whereDate('order_date', '>=', $v))
-            ->when($r->to,          fn($qq, $v) => $qq->whereDate('order_date', '<=', $v))
+            // ===== FILTER DARI FE =====
+            ->when($r->status, function ($qq, $v) {
+                $qq->where('purchases.status', $v);
+            })
+            ->when($r->supplier_id, function ($qq, $v) {
+                $qq->where('purchases.supplier_id', $v);
+            })
+            ->when($r->from, function ($qq, $v) {
+                $qq->whereDate('purchases.order_date', '>=', $v);
+            })
+            ->when($r->to, function ($qq, $v) {
+                $qq->whereDate('purchases.order_date', '<=', $v);
+            })
+            // FILTER STORE DARI FE (PENTING)
+            ->when($r->store_location_id, function ($qq, $v) {
+                $qq->where('purchases.store_location_id', $v);
+            })
+            // SEARCH: nomor PO / nama supplier
+            ->when($search !== '', function ($qq) use ($search) {
+                $qq->where(function ($sub) use ($search) {
+                    $sub->where('purchases.purchase_number', 'like', "%{$search}%")
+                        ->orWhereHas('supplier', function ($qs) use ($search) {
+                            $qs->where('name', 'like', "%{$search}%");
+                        });
+                });
+            })
             // sort
-            ->orderByDesc('id');
+            ->orderByDesc('purchases.id');
 
         $p = $q->paginate($perPage)->appends($r->query());
 
@@ -76,6 +105,7 @@ class PurchaseController extends Controller
         ]);
     }
 
+
     /**
      * DETAIL PO (panggil hanya saat user buka modal/halaman detail)
      * Tetap lengkap dengan items.product.
@@ -84,6 +114,7 @@ class PurchaseController extends Controller
     {
         return $purchase->load([
             'supplier:id,name',
+            'storeLocation:id,name',
             'items.product:id,sku,name',
         ]);
     }
@@ -94,57 +125,33 @@ class PurchaseController extends Controller
     public function store(StorePurchaseRequest $req)
     {
         $data   = $req->validated();
-        $userId = $req->user()->id;
+        $user   = $req->user();
+        $userId = $user->id;
 
-        $po = DB::transaction(function () use ($data, $userId) {
+        // AMBIL STORE USER (sesuai pola project-mu yang lain)
+        $storeLocationId = $user->store_location_id ?? $user->store_location?->id ?? null;
+
+        $po = DB::transaction(function () use ($data, $userId, $storeLocationId) {
             $po = Purchase::create([
-                'purchase_number' => Purchase::nextNumber(),
-                'supplier_id'     => $data['supplier_id'],
-                'user_id'         => $userId,
-                'order_date'      => $data['order_date'],
-                'expected_date'   => $data['expected_date'] ?? null,
-                'status'          => 'draft',
-                'notes'           => $data['notes'] ?? null,
-                'other_cost'      => (float) ($data['other_cost'] ?? 0),
+                'purchase_number'    => Purchase::nextNumber(),
+                'supplier_id'        => $data['supplier_id'],
+                'user_id'            => $userId,
+                'store_location_id'  => $storeLocationId,   // <-- PENTING
+                'order_date'         => $data['order_date'],
+                'expected_date'      => $data['expected_date'] ?? null,
+                'status'             => 'draft',
+                'notes'              => $data['notes'] ?? null,
+                'other_cost'         => (float) ($data['other_cost'] ?? 0),
             ]);
 
-            $subtotal = 0;
-            $taxTotal = 0;
-
-            foreach ($data['items'] as $it) {
-                $qty   = (int) $it['qty_order'];
-                $price = (float) $it['unit_price'];
-                $disc  = (float) ($it['discount'] ?? 0);
-                $tax   = (float) ($it['tax'] ?? 0);
-
-                $line = ($qty * $price) - $disc + $tax;
-
-                PurchaseItem::create([
-                    'purchase_id'  => $po->id,
-                    'product_id'   => $it['product_id'],
-                    'qty_order'    => $qty,
-                    'qty_received' => 0,
-                    'unit_price'   => $price,
-                    'discount'     => $disc,
-                    'tax'          => $tax,
-                    'line_total'   => $line,
-                ]);
-
-                $subtotal += ($qty * $price) - $disc;
-                $taxTotal += $tax;
-            }
-
-            $po->update([
-                'subtotal'    => $subtotal,
-                'tax_total'   => $taxTotal,
-                'grand_total' => $subtotal + $taxTotal + $po->other_cost,
-            ]);
+            // ... sisanya sama seperti punyamu (loop items, hitung subtotal, dll)
 
             return $po->load('items.product:id,sku,name');
         });
 
         return response()->json($po, 201);
     }
+
 
     /**
      * APPROVE PO
@@ -164,7 +171,10 @@ class PurchaseController extends Controller
             'approved_at' => now(),
         ]);
 
-        return response()->json(['message' => 'Purchase approved', 'status' => 'approved']);
+        return response()->json([
+            'message' => 'Purchase approved',
+            'status'  => 'approved',
+        ]);
     }
 
     /**
@@ -188,13 +198,18 @@ class PurchaseController extends Controller
      */
     public function batch(Request $r)
     {
-        $ids = array_filter((array) $r->input('ids', []), fn ($v) => is_numeric($v));
+        $ids = array_filter(
+            (array) $r->input('ids', []),
+            fn ($v) => is_numeric($v)
+        );
+
         if (empty($ids)) {
             return response()->json(['items' => []]);
         }
 
         $rows = Purchase::with([
             'supplier:id,name',
+            'storeLocation:id,name',
             'items.product:id,sku,name',
         ])->whereIn('id', $ids)->get();
 

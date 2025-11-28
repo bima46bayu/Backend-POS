@@ -22,7 +22,7 @@ class CategoryController extends Controller
         $perPage = (int) $request->query('per_page', 15);
         $perPage = $perPage > 100 ? 100 : ($perPage < 1 ? 15 : $perPage);
 
-        return $q->orderBy('name')->paginate($perPage);
+        return $q->orderBy('created_at')->paginate($perPage);
     }
 
     // POST /api/categories
