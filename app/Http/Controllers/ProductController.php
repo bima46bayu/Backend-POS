@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use App\Models\Product;
+use App\Models\Unit;
 use App\Http\Requests\UpdateProductRequest;
 use Illuminate\Support\Str;
 use Illuminate\Support\Arr;
@@ -83,9 +84,21 @@ class ProductController extends Controller
 
         $q = Product::query()
             ->select([
-                'id','category_id','sub_category_id','sku','name','description',
-                'price','stock','image_url','store_location_id','created_by',
-                'created_at','updated_at',
+                'products.id',
+                'products.category_id',
+                'products.sub_category_id',
+                'products.sku',
+                'products.name',
+                'products.description',
+                'products.price',
+                'products.stock',
+                'products.image_url',
+                'products.store_location_id',
+                'products.created_by',
+                'products.created_at',
+                'products.updated_at',
+                'products.unit_id',
+                DB::raw('(SELECT name FROM units WHERE units.id = products.unit_id LIMIT 1) AS unit_name'),
             ])
             ->when($skuExact !== '', fn($qq) => $qq->where('sku', $skuExact))
             ->when($search !== '', function ($qq) use ($search) {
@@ -146,6 +159,7 @@ class ProductController extends Controller
             'category_id'       => 'nullable|integer',
             'sub_category_id'   => 'nullable|integer',
             'description'       => 'nullable|string',
+            'unit_id'           => 'nullable|exists:units,id', // ← unit dari master units
             // penting: nullable, bukan sometimes
             'image'             => 'nullable|file|mimes:jpg,jpeg,png,webp,svg,svg+xml|max:5120',
             'store_location_id' => 'nullable|integer|exists:store_locations,id',
@@ -180,6 +194,14 @@ class ProductController extends Controller
                     }
                 }
 
+                // 2b) Tentukan unit_id (default dari database jika tidak dikirim)
+                if (!empty($data['unit_id'])) {
+                    $unitId = $data['unit_id'];
+                } else {
+                    $defaultUnit = Unit::where('is_system', true)->orderBy('id')->first();
+                    $unitId = $defaultUnit?->id;
+                }
+
                 // 3) Buat produk
                 $productId = DB::table('products')->insertGetId([
                     'sku'               => $data['sku'] ?? null,
@@ -188,6 +210,7 @@ class ProductController extends Controller
                     'category_id'       => $data['category_id'] ?? null,
                     'sub_category_id'   => $data['sub_category_id'] ?? null,
                     'description'       => $data['description'] ?? null,
+                    'unit_id'           => $unitId,
                     'image_url'         => $imagePath,
                     'stock'             => 0,
                     'store_location_id' => $storeLocationId,
@@ -283,13 +306,16 @@ class ProductController extends Controller
 
     public function show(Product $product)
     {
+        // kalau mau sekaligus unit_name di FE:
+        $product->load('unit');
+
         return response()->json($product);
     }
 
     public function update(UpdateProductRequest $request, Product $product)
     {
         $user = $request->user();
-        $data = $request->validated();
+        $data = $request->validated(); // pastikan UpdateProductRequest punya rule unit_id: sometimes|nullable|exists:units,id
 
         // normalisasi nullable
         foreach (['description','category_id','sub_category_id'] as $k) {
@@ -323,10 +349,18 @@ class ProductController extends Controller
             }
         }
 
+        // Default unit untuk update (kalau field unit_id dikirim & kosong)
+        if (array_key_exists('unit_id', $data)) {
+            if (empty($data['unit_id'])) {
+                $defaultUnit = Unit::where('is_system', true)->orderBy('id')->first();
+                $data['unit_id'] = $defaultUnit?->id;
+            }
+        }
+
         $product->update($data);
 
         return response()->json([
-            'data' => $product->fresh(),
+            'data' => $product->fresh()->load('unit'),
         ]);
     }
 
@@ -506,6 +540,8 @@ class ProductController extends Controller
                 'message' => 'Produk tidak ditemukan',
             ], 404);
         }
+
+        $product->load('unit');
 
         return response()->json([
             'success' => true,

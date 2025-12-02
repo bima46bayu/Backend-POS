@@ -6,6 +6,7 @@ use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
 use App\Models\User;
 use App\Models\StoreLocation;
+use Database\Seeders\UnitSeeder;
 
 class DatabaseSeeder extends Seeder
 {
@@ -46,5 +47,7 @@ class DatabaseSeeder extends Seeder
             'role'               => 'kasir',
             'store_location_id'  => $mainStore->id,
         ]);
+
+        $this->call(UnitSeeder::class);
     }
 }

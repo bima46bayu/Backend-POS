@@ -18,6 +18,7 @@ use App\Http\Controllers\UserController;
 use App\Http\Controllers\ProductImportController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\StockReconciliationController;
+use App\Http\Controllers\UnitController;
 
 
 Route::options('{any}', function () {
@@ -194,6 +195,12 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::post  ('/{id}/apply',         [StockReconciliationController::class, 'apply']);    // commit → ledger/layers
             Route::delete('/{id}',               [StockReconciliationController::class, 'destroy']);  // hapus DRAFT
         });
-        // routes/api.php
+            
+        Route::middleware(['auth:sanctum'])->group(function () {
+            Route::get('/units', [UnitController::class, 'index']);
+            Route::post('/units', [UnitController::class, 'store']);
+            Route::put('/units/{unit}', [UnitController::class, 'update']);
+            Route::delete('/units/{unit}', [UnitController::class, 'destroy']);
+        });
     });
 });
