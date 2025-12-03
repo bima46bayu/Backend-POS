@@ -9,7 +9,7 @@ class UpdateProductRequest extends FormRequest
 {
     public function authorize(): bool
     {
-        return true; // atau logic auth kamu
+        return true; // atau pakai logic auth kamu
     }
 
     public function rules(): array
@@ -33,19 +33,14 @@ class UpdateProductRequest extends FormRequest
             'category_id'     => ['nullable', 'integer', 'exists:categories,id'],
             'sub_category_id' => ['nullable', 'integer', 'exists:sub_categories,id'],
 
-            // ✅ ini yang tadi belum ada → bikin unit_id ikut tervalidasi & tidak dibuang
+            // ✅ penting: unit_id ikut tervalidasi, biar nggak dibuang dari validated()
             'unit_id'         => ['nullable', 'integer', 'exists:units,id'],
 
-            // kalau update bisa kirim file langsung
-            'image'           => ['sometimes', 'file', 'mimes:jpg,jpeg,png,svg', 'max:10240'], // 10MB
+            // image opsional
+            'image'           => ['sometimes', 'file', 'mimes:jpg,jpeg,png,webp,svg,svg+xml', 'max:5120'],
         ];
     }
 
-    /**
-     * Normalisasi input:
-     * - "" → null untuk field nullable
-     * - cast angka supaya konsisten
-     */
     protected function prepareForValidation(): void
     {
         $toNull = fn ($v) => ($v === '' || $v === 'null' || $v === null) ? null : $v;
@@ -55,13 +50,12 @@ class UpdateProductRequest extends FormRequest
             'category_id'     => $toNull($this->input('category_id')),
             'sub_category_id' => $toNull($this->input('sub_category_id')),
 
-            // ✅ normalisasi unit_id (boleh kosong → null)
             'unit_id'         => $this->input('unit_id') !== null && $this->input('unit_id') !== ''
                 ? (int) $this->input('unit_id')
                 : null,
 
             'price'           => $this->input('price') !== null && $this->input('price') !== ''
-                ? (float) $this->input('price')
+                ? (float) str_replace(',', '.', $this->input('price'))
                 : null,
 
             'stock'           => $this->input('stock') !== null && $this->input('stock') !== ''

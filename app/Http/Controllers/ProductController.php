@@ -312,57 +312,62 @@ class ProductController extends Controller
         return response()->json($product);
     }
 
-    public function update(UpdateProductRequest $request, Product $product)
-    {
-        $user = $request->user();
-        $data = $request->validated(); // pastikan UpdateProductRequest punya rule unit_id: sometimes|nullable|exists:units,id
+public function update(UpdateProductRequest $request, Product $product)
+{
+    $user = $request->user();
+    $data = $request->validated(); // sudah termasuk unit_id
 
-        // normalisasi nullable
-        foreach (['description','category_id','sub_category_id'] as $k) {
-            if (! Arr::has($data, $k) || $data[$k] === '') {
-                $data[$k] = null;
-            }
+    // Normalisasi beberapa field ("" -> null)
+    foreach (['description', 'category_id', 'sub_category_id', 'unit_id'] as $k) {
+        if (!Arr::has($data, $k) || $data[$k] === '') {
+            $data[$k] = null;
         }
-
-        // Upload image (opsional)
-        if ($request->hasFile('image')) {
-            $request->validate([
-                'image' => ['file','mimes:jpg,jpeg,png,webp,svg,svg+xml','max:5120'],
-            ]);
-
-            $this->tryDeletePublicProductImage($product->image_url);
-            $data['image_url'] = $this->putPublicProductImage($request->file('image'));
-        }
-
-        // Aturan saat update:
-        if ($user->role !== 'admin') {
-            if (empty($product->store_location_id) || $product->store_location_id !== $user->store_location_id) {
-                return response()->json(['message' => 'Forbidden'], 403);
-            }
-            unset($data['store_location_id'], $data['scope']);
-        } else {
-            $scope = $request->input('scope'); // global|store|null
-            if ($scope === 'global') {
-                $data['store_location_id'] = null;
-            } elseif (array_key_exists('store_location_id', $data)) {
-                // gunakan nilai yg dikirim (bisa null → global, bisa id toko)
-            }
-        }
-
-        // Default unit untuk update (kalau field unit_id dikirim & kosong)
-        if (array_key_exists('unit_id', $data)) {
-            if (empty($data['unit_id'])) {
-                $defaultUnit = Unit::where('is_system', true)->orderBy('id')->first();
-                $data['unit_id'] = $defaultUnit?->id;
-            }
-        }
-
-        $product->update($data);
-
-        return response()->json([
-            'data' => $product->fresh()->load('unit'),
-        ]);
     }
+
+    // Upload image (opsional)
+    if ($request->hasFile('image')) {
+        $this->tryDeletePublicProductImage($product->image_url);
+        $data['image_url'] = $this->putPublicProductImage($request->file('image'));
+
+        // jangan kirim field 'image' (UploadedFile) ke update()
+        unset($data['image']);
+    }
+
+    // Aturan update admin vs non-admin
+    if ($user->role !== 'admin') {
+        // non-admin hanya boleh edit produk dari store-nya sendiri
+        if (empty($product->store_location_id) || $product->store_location_id !== $user->store_location_id) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        // non-admin tidak boleh mengubah store/scope
+        unset($data['store_location_id'], $data['scope']);
+    } else {
+        // admin: boleh pakai scope=global, kalau tidak → biarkan store_location_id sekarang
+        $scope = $request->input('scope'); // 'global' | 'store' | null
+
+        if ($scope === 'global') {
+            $product->store_location_id = null;
+        }
+
+        unset($data['store_location_id'], $data['scope']);
+    }
+
+    // ❗ Di UPDATE kita TIDAK pakai default unit lagi
+    //    Kalau user kosongkan unit di UI → akan tersimpan null (tanpa unit).
+    //    Kalau user pilih unit lain → unit_id berisi ID sesuai pilihan dropdown.
+    // Tinggal fill & save:
+    $product->fill($data);
+    $product->save();
+
+    // load relasi buat FE
+    $product->load(['category', 'subCategory', 'unit', 'storeLocation']);
+
+    return response()->json([
+        'message' => 'Product updated',
+        'data'    => $product,
+    ]);
+}
 
     public function destroy(Product $product)
     {
