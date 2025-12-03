@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 
 use App\Models\StoreLocation;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 
 class StoreLocationController extends Controller
 {
@@ -67,5 +68,48 @@ class StoreLocationController extends Controller
 
         $store->delete();
         return response()->json(['message' => 'Deleted']);
+    }
+
+    public function uploadLogo(Request $request, $id)
+    {
+        $store = StoreLocation::findOrFail($id);
+
+        $data = $request->validate([
+            'logo' => 'required|image|mimes:jpeg,png,jpg,svg,webp|max:2048',
+        ]);
+
+        $file = $request->file('logo');
+
+        // pastikan foldernya ada
+        $uploadDir = public_path('uploads/storeLogo');
+        if (!is_dir($uploadDir)) {
+            mkdir($uploadDir, 0755, true);
+        }
+
+        // bikin nama file unik
+        $ext = $file->getClientOriginalExtension();
+        $base = pathinfo($file->getClientOriginalName(), PATHINFO_FILENAME);
+        $slug = Str::slug($base);
+        $filename = $slug . '-' . time() . '.' . $ext;
+
+        // pindah ke public/uploads/storeLogo
+        $file->move($uploadDir, $filename);
+
+        // optional: hapus logo lama kalau masih ada & di folder yang sama
+        if ($store->logo_url) {
+            $oldPath = public_path(ltrim($store->logo_url, '/'));
+            if (file_exists($oldPath)) {
+                @unlink($oldPath);
+            }
+        }
+
+        // simpan URL relatif di DB, misal: /uploads/storeLogo/xx.png
+        $relativeUrl = '/uploads/storeLogo/' . $filename;
+        $store->logo_url = $relativeUrl;
+        $store->save();
+
+        return response()->json([
+            'data' => $store,
+        ]);
     }
 }

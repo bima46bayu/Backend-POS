@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class StoreLocation extends Model
 {
-    protected $fillable = ['code','name','address','phone'];
+    protected $fillable = ['code','name','address','phone','logo_url'];
 
     public function users()
     {

@@ -47,6 +47,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/store-locations/{id}',   [StoreLocationController::class, 'show'])->whereNumber('id');
     Route::put('/store-locations/{id}',   [StoreLocationController::class, 'update'])->whereNumber('id');
     Route::delete('/store-locations/{id}',[StoreLocationController::class, 'destroy'])->whereNumber('id');
+    Route::post('/store-locations/{id}/logo', [StoreLocationController::class, 'uploadLogo']);
 
     Route::get('/inventory/layers',       [InventoryController::class, 'layers']);       // ?product_id=&store_id=&per_page=
     Route::get('/inventory/consumptions', [InventoryController::class, 'consumptions']); // ?product_id=&sale_id=&per_page=
