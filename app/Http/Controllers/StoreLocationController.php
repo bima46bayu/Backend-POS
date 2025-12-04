@@ -1,11 +1,11 @@
 <?php
 
-// app/Http/Controllers/StoreLocationController.php
 namespace App\Http\Controllers;
 
 use App\Models\StoreLocation;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Log;
 
 class StoreLocationController extends Controller
 {
@@ -17,8 +17,8 @@ class StoreLocationController extends Controller
         if ($search = $request->query('search')) {
             $q->where(function ($qq) use ($search) {
                 $qq->where('name', 'like', "%{$search}%")
-                   ->orWhere('code', 'like', "%{$search}%")
-                   ->orWhere('address', 'like', "%{$search}%");
+                    ->orWhere('code', 'like', "%{$search}%")
+                    ->orWhere('address', 'like', "%{$search}%");
             });
         }
 
@@ -27,7 +27,12 @@ class StoreLocationController extends Controller
 
     public function show($id)
     {
-        return response()->json(StoreLocation::findOrFail($id));
+        $store = StoreLocation::findOrFail($id);
+
+        // supaya FE bisa handle bentuk { data: {...} } atau {...}
+        return response()->json([
+            'data' => $store,
+        ]);
     }
 
     public function store(Request $request)
@@ -40,7 +45,10 @@ class StoreLocationController extends Controller
         ]);
 
         $store = StoreLocation::create($data);
-        return response()->json($store, 201);
+
+        return response()->json([
+            'data' => $store,
+        ], 201);
     }
 
     public function update(Request $request, $id)
@@ -55,7 +63,10 @@ class StoreLocationController extends Controller
         ]);
 
         $store->update($data);
-        return response()->json($store);
+
+        return response()->json([
+            'data' => $store,
+        ]);
     }
 
     public function destroy($id)
@@ -67,43 +78,43 @@ class StoreLocationController extends Controller
         }
 
         $store->delete();
+
         return response()->json(['message' => 'Deleted']);
     }
 
+    /* =========================
+       Upload logo (simpan URL)
+       ========================= */
     public function uploadLogo(Request $request, $id)
     {
         $store = StoreLocation::findOrFail($id);
 
-        $data = $request->validate([
+        $request->validate([
             'logo' => 'required|image|mimes:jpeg,png,jpg,svg,webp|max:2048',
         ]);
 
         $file = $request->file('logo');
 
-        // pastikan foldernya ada
         $uploadDir = public_path('uploads/storeLogo');
         if (!is_dir($uploadDir)) {
             mkdir($uploadDir, 0755, true);
         }
 
-        // bikin nama file unik
-        $ext = $file->getClientOriginalExtension();
-        $base = pathinfo($file->getClientOriginalName(), PATHINFO_FILENAME);
-        $slug = Str::slug($base);
+        $ext   = $file->getClientOriginalExtension();
+        $base  = pathinfo($file->getClientOriginalName(), PATHINFO_FILENAME);
+        $slug  = Str::slug($base) ?: 'store-logo';
         $filename = $slug . '-' . time() . '.' . $ext;
 
-        // pindah ke public/uploads/storeLogo
         $file->move($uploadDir, $filename);
 
-        // optional: hapus logo lama kalau masih ada & di folder yang sama
+        // Hapus logo lama (kalau masih di folder yang sama)
         if ($store->logo_url) {
             $oldPath = public_path(ltrim($store->logo_url, '/'));
-            if (file_exists($oldPath)) {
+            if (is_file($oldPath)) {
                 @unlink($oldPath);
             }
         }
 
-        // simpan URL relatif di DB, misal: /uploads/storeLogo/xx.png
         $relativeUrl = '/uploads/storeLogo/' . $filename;
         $store->logo_url = $relativeUrl;
         $store->save();
@@ -111,5 +122,40 @@ class StoreLocationController extends Controller
         return response()->json([
             'data' => $store,
         ]);
+    }
+
+    /* =========================
+       Serve logo sebagai image
+       ========================= */
+    public function logo($id)
+    {
+        try {
+            $store = StoreLocation::findOrFail($id);
+
+            if (!$store->logo_url) {
+                return response()->json(['message' => 'Logo not set'], 404);
+            }
+
+            $path = public_path(ltrim($store->logo_url, '/'));
+            if (!is_file($path)) {
+                return response()->json(['message' => 'Logo file not found'], 404);
+            }
+
+            $mime = mime_content_type($path) ?: 'image/png';
+
+            return response()->file($path, [
+                'Content-Type'                 => $mime,
+                'Access-Control-Allow-Origin'  => '*',
+                'Access-Control-Allow-Methods' => 'GET, OPTIONS',
+                'Access-Control-Allow-Headers' => 'Origin, Content-Type, Accept',
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Error serving store logo', [
+                'store_id' => $id,
+                'error'    => $e->getMessage(),
+            ]);
+
+            return response()->json(['message' => 'Failed to load logo'], 500);
+        }
     }
 }

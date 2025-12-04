@@ -32,6 +32,11 @@ Route::options('{any}', function () {
 Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login',    [AuthController::class, 'login']);
 
+// 🔓 logo store boleh public
+Route::get('/store-locations/{id}/logo', [StoreLocationController::class, 'logo'])
+    ->whereNumber('id');
+// Route::get('/store-locations/{id}/logo', [StoreLocationController::class, 'logo']);
+
 /*
 |--------------------------------------------------------------------------
 | AUTHENTICATED (semua user login)
@@ -48,6 +53,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/store-locations/{id}',   [StoreLocationController::class, 'update'])->whereNumber('id');
     Route::delete('/store-locations/{id}',[StoreLocationController::class, 'destroy'])->whereNumber('id');
     Route::post('/store-locations/{id}/logo', [StoreLocationController::class, 'uploadLogo']);
+    // Route::get('/store-locations/{id}/logo', [StoreLocationController::class, 'logo']);
 
     Route::get('/inventory/layers',       [InventoryController::class, 'layers']);       // ?product_id=&store_id=&per_page=
     Route::get('/inventory/consumptions', [InventoryController::class, 'consumptions']); // ?product_id=&sale_id=&per_page=
