@@ -9,7 +9,12 @@ use Illuminate\Database\Eloquent\Model;
 class SubCategory extends Model 
 {
     use HasFactory;
-    protected $fillable = ['category_id','name'];
+    protected $fillable = ['category_id','name','store_location_id',];
+
+    public function storeLocation()
+    {
+        return $this->belongsTo(StoreLocation::class, 'store_location_id');
+    }
 
     public function category()
     {

@@ -4,21 +4,38 @@ namespace App\Http\Controllers;
 
 use App\Models\Category;
 use Illuminate\Http\Request;
-use App\Http\Requests\StoreCategoryRequest;
-use App\Http\Requests\UpdateCategoryRequest;
 
 class CategoryController extends Controller
 {
-    // GET /api/categories?search=&per_page=
+    // GET /api/categories?search=&per_page=&store_location_id=
     public function index(Request $request)
     {
         $q = Category::query();
+        $user = $request->user();
 
-        if ($s = $request->query('search')) {
-            $q->where('name', 'like', "%{$s}%")
-              ->orWhere('description', 'like', "%{$s}%");
+        // 1) Tentukan store_location_id (prioritas: query param → user)
+        $storeId = $request->query('store_location_id');
+
+        if (!$storeId && $user) {
+            $storeId = $user->store_location_id
+                ?? optional($user->storeLocation)->id
+                ?? null;
         }
 
+        // 2) Filter berdasarkan store_location_id
+        if ($storeId) {
+            $q->where('store_location_id', $storeId);
+        }
+
+        // 3) Search
+        if ($s = $request->query('search')) {
+            $q->where(function ($qq) use ($s) {
+                $qq->where('name', 'like', "%{$s}%")
+                   ->orWhere('description', 'like', "%{$s}%");
+            });
+        }
+
+        // 4) Pagination
         $perPage = (int) $request->query('per_page', 15);
         $perPage = $perPage > 100 ? 100 : ($perPage < 1 ? 15 : $perPage);
 
@@ -28,12 +45,23 @@ class CategoryController extends Controller
     // POST /api/categories
     public function store(Request $request)
     {
+        $user = $request->user();
+
         $data = $request->validate([
             'name'        => 'required|string|max:100|unique:categories,name',
             'description' => 'nullable|string',
+            'store_location_id' => 'nullable|exists:store_locations,id',
         ]);
 
+        // Kalau FE nggak kirim store_location_id → pakai store user
+        if (empty($data['store_location_id']) && $user) {
+            $data['store_location_id'] = $user->store_location_id
+                ?? optional($user->storeLocation)->id
+                ?? null;
+        }
+
         $category = Category::create($data);
+
         return response()->json($category, 201);
     }
 
@@ -49,18 +77,19 @@ class CategoryController extends Controller
         $data = $request->validate([
             'name'        => 'sometimes|required|string|max:100|unique:categories,name,' . $category->id,
             'description' => 'sometimes|nullable|string',
+            'store_location_id' => 'sometimes|nullable|exists:store_locations,id',
         ]);
 
         $category->update($data);
+
         return response()->json($category);
     }
 
     // DELETE /api/categories/{category}
     public function destroy(Category $category)
     {
-        // jika di migration sub_categories pakai cascadeOnDelete, ini aman
         $category->delete();
+
         return response()->json(['message' => 'Category deleted']);
     }
 }
-

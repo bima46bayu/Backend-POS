@@ -3,98 +3,100 @@
 namespace App\Http\Controllers;
 
 use App\Models\SubCategory;
-use App\Models\Category;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 class SubCategoryController extends Controller
 {
-    // GET /api/sub-categories?search=&category_id=&per_page=
+    // GET /api/sub-categories?search=&category_id=&store_location_id=&per_page=
     public function index(Request $request)
     {
-        $q = SubCategory::query()->with('category:id,name');
+        $q = SubCategory::query()->with('category');
+        $user = $request->user();
 
+        // 1) Tentukan store_location_id
+        $storeId = $request->query('store_location_id');
+
+        if (!$storeId && $user) {
+            $storeId = $user->store_location_id
+                ?? optional($user->storeLocation)->id
+                ?? null;
+        }
+
+        // 2) Filter berdasarkan store
+        if ($storeId) {
+            $q->where('store_location_id', $storeId);
+        }
+
+        // 3) Filter by category_id (untuk dependent dropdown)
         if ($request->filled('category_id')) {
-            $q->where('category_id', $request->category_id);
-        }
-        if ($s = $request->query('search')) {
-            $q->where('name', 'like', "%{$s}%");
+            $q->where('category_id', $request->query('category_id'));
         }
 
+        // 4) Search
+        if ($s = $request->query('search')) {
+            $q->where(function ($qq) use ($s) {
+                $qq->where('name', 'like', "%{$s}%")
+                   ->orWhere('description', 'like', "%{$s}%");
+            });
+        }
+
+        // 5) Pagination
         $perPage = (int) $request->query('per_page', 15);
         $perPage = $perPage > 100 ? 100 : ($perPage < 1 ? 15 : $perPage);
 
         return $q->orderBy('created_at')->paginate($perPage);
     }
 
-    // GET /api/categories/{category}/sub-categories
-    public function indexByCategory(Category $category)
-    {
-        return $category->subCategories()->orderBy('name')->get();
-    }
-
     // POST /api/sub-categories
     public function store(Request $request)
     {
+        $user = $request->user();
+
         $data = $request->validate([
-            'category_id' => 'required|exists:categories,id',
             'name'        => 'required|string|max:100',
+            'description' => 'nullable|string',
+            'category_id' => 'required|exists:categories,id',
+            'store_location_id' => 'nullable|exists:store_locations,id',
         ]);
 
-        // unik per kategori
-        $exists = SubCategory::where('category_id', $data['category_id'])
-                    ->where('name', $data['name'])
-                    ->exists();
-        if ($exists) {
-            return response()->json(['message' => 'Sub category name already exists in this category'], 422);
+        // Kalau FE tidak kirim store_location_id → ikut store user
+        if (empty($data['store_location_id']) && $user) {
+            $data['store_location_id'] = $user->store_location_id
+                ?? optional($user->storeLocation)->id
+                ?? null;
         }
 
         $sub = SubCategory::create($data);
-        return response()->json($sub->load('category:id,name'), 201);
+
+        return response()->json($sub, 201);
     }
 
-    // GET /api/sub-categories/{sub_category}
-    public function show(SubCategory $sub_category)
+    // GET /api/sub-categories/{subCategory}
+    public function show(SubCategory $subCategory)
     {
-        return response()->json($sub_category->load('category:id,name'));
+        return response()->json($subCategory->load('category'));
     }
 
-    // PATCH/PUT /api/sub-categories/{sub_category}
-    // PUT/PATCH /api/sub-categories/{subCategory}
+    // PATCH/PUT /api/sub-categories/{subCategory}
     public function update(Request $request, SubCategory $subCategory)
     {
         $data = $request->validate([
-            'category_id' => 'sometimes|required|exists:categories,id',
             'name'        => 'sometimes|required|string|max:100',
+            'description' => 'sometimes|nullable|string',
+            'category_id' => 'sometimes|required|exists:categories,id',
+            'store_location_id' => 'sometimes|nullable|exists:store_locations,id',
         ]);
-
-        $newCatId = $data['category_id'] ?? $subCategory->category_id;
-        $newName  = $data['name'] ?? $subCategory->name;
-
-        $exists = SubCategory::where('category_id', $newCatId)
-            ->where('name', $newName)
-            ->where('id', '!=', $subCategory->id)
-            ->exists();
-
-        if ($exists) {
-            return response()->json([
-                'message' => 'Sub category name already exists in this category'
-            ], 422);
-        }
 
         $subCategory->update($data);
 
-        return response()->json($subCategory->load('category:id,name'));
+        return response()->json($subCategory);
     }
 
     // DELETE /api/sub-categories/{subCategory}
     public function destroy(SubCategory $subCategory)
     {
         $subCategory->delete();
-        return response()->json(['message' => 'Sub category deleted']);
+
+        return response()->json(['message' => 'SubCategory deleted']);
     }
-
-
 }
-
-

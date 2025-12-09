@@ -10,7 +10,12 @@ use App\Models\Product;
 class Category extends Model
 {
     use HasFactory;
-    protected $fillable = ['name','description'];
+    protected $fillable = ['name','description','store_location_id',];
+
+    public function storeLocation()
+    {
+        return $this->belongsTo(StoreLocation::class, 'store_location_id');
+    }
 
     public function subCategories()
     {

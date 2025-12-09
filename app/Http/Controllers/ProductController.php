@@ -79,7 +79,17 @@ class ProductController extends Controller
         $minPrice      = $request->input('min_price');
         $maxPrice      = $request->input('max_price');
 
-        $storeId   = $request->integer('store_id');
+        // ⬇️ BACA store_location_id *atau* store_id, lalu fallback ke store user
+        $storeIdFromReq =
+            $request->integer('store_location_id') ?: $request->integer('store_id');
+
+        $user = $request->user();
+
+        $storeId =
+            $storeIdFromReq
+            ?? ($user->store_location_id ?? optional($user->storeLocation)->id ?? optional($user->store)->id)
+            ?? null;
+
         $onlyStore = $request->boolean('only_store', false);
 
         $q = Product::query()
@@ -104,7 +114,7 @@ class ProductController extends Controller
             ->when($search !== '', function ($qq) use ($search) {
                 $qq->where(function ($w) use ($search) {
                     $w->where('name', 'like', "%{$search}%")
-                      ->orWhere('sku', 'like', "%{$search}%");
+                    ->orWhere('sku', 'like', "%{$search}%");
                 });
             })
             ->when($categoryId, function ($qq) use ($categoryId) {
@@ -120,11 +130,14 @@ class ProductController extends Controller
             ->when($minPrice !== null && $minPrice !== '', fn($qq) => $qq->where('price', '>=', (float) $minPrice))
             ->when($maxPrice !== null && $maxPrice !== '', fn($qq) => $qq->where('price', '<=', (float) $maxPrice));
 
+        // ⬇️ FILTER store
         if ($storeId) {
             if ($onlyStore) {
-                $q->where('store_location_id', $storeId);        // hanya milik store
+                // hanya produk milik store itu
+                $q->where('store_location_id', $storeId);
             } else {
-                $q->forStore($storeId, true);                    // global + milik store
+                // kalau kamu pakai scope forStore(global+store), tetap bisa
+                $q->forStore($storeId, true);
             }
         }
 
@@ -146,6 +159,7 @@ class ProductController extends Controller
             ],
         ]);
     }
+
 
     public function store(Request $req)
     {
