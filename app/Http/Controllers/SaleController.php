@@ -20,32 +20,31 @@ class SaleController extends Controller
 {
     public function index(Request $r)
     {
-        $q = Sale::with(['items.product','cashier.storeLocation','payments'])
+        // tambahkan storeLocation di eager load
+        $q = Sale::with(['items.product', 'cashier', 'storeLocation', 'payments'])
             ->latest('id');
 
-        if ($r->filled('code'))           $q->where('code','like','%'.$r->code.'%');
-        if ($r->filled('cashier_id'))     $q->where('cashier_id', $r->cashier_id);
-        if ($r->filled('status'))         $q->where('status', $r->status);
-        if ($r->filled('from'))           $q->whereDate('created_at','>=',$r->from);
-        if ($r->filled('to'))             $q->whereDate('created_at','<=',$r->to);
+        if ($r->filled('code'))       $q->where('code', 'like', '%' . $r->code . '%');
+        if ($r->filled('cashier_id')) $q->where('cashier_id', $r->cashier_id);
+        if ($r->filled('status'))     $q->where('status', $r->status);
+        if ($r->filled('from'))       $q->whereDate('created_at', '>=', $r->from);
+        if ($r->filled('to'))         $q->whereDate('created_at', '<=', $r->to);
 
+        // 🔥 sekarang langsung pakai kolom sales.store_location_id (lebih cepat)
         if ($r->filled('store_location_id')) {
-            $storeId = $r->store_location_id;
-            $q->whereHas('cashier', function($qq) use ($storeId) {
-                $qq->where('store_location_id', $storeId);
-            });
+            $q->where('store_location_id', $r->store_location_id);
         }
 
         if ($r->boolean('only_discount')) {
-            $q->where(function($qq){
+            $q->where(function ($qq) {
                 $qq->where('discount', '>', 0)
-                ->orWhereHas('items', function($qi){
-                    $qi->where('discount_nominal','>',0);
-                });
+                    ->orWhereHas('items', function ($qi) {
+                        $qi->where('discount_nominal', '>', 0);
+                    });
             });
         }
 
-        $perPage = (int) ($r->per_page ?? 10);
+        $perPage = (int)($r->per_page ?? 10);
         $perPage = max(1, min(50000, $perPage));
 
         return response()->json($q->paginate($perPage));
@@ -53,7 +52,8 @@ class SaleController extends Controller
 
     public function show(Sale $sale)
     {
-        $sale->load(['items.product','cashier','payments']);
+        // tambahkan storeLocation di detail
+        $sale->load(['items.product', 'cashier', 'storeLocation', 'payments']);
         return response()->json($sale);
     }
 
@@ -80,7 +80,7 @@ class SaleController extends Controller
                 $product = $products[$row['product_id']] ?? null;
                 if (!$product) abort(422, "Product {$row['product_id']} not found.");
 
-                $qty = (int) ($row['qty'] ?? 0);
+                $qty = (int)($row['qty'] ?? 0);
                 if ($qty < 1) abort(422, 'Qty minimal 1');
 
                 // VALIDASI stok (legacy: pakai products.stock seperti kodenya sekarang)
@@ -88,7 +88,7 @@ class SaleController extends Controller
                     abort(422, "Stok tidak cukup untuk {$product->name} (tersisa {$product->stock})");
                 }
 
-                $unitPrice = (float) ($row['unit_price'] ?? $product->price);
+                $unitPrice = (float)($row['unit_price'] ?? $product->price);
                 $discUnit  = round((float)($row['discount_nominal'] ?? 0), 2);
                 $discUnit  = max(0, min($discUnit, $unitPrice));
 
@@ -125,14 +125,14 @@ class SaleController extends Controller
             $serviceCharge = round((float)($request->service_charge ?? 0), 2);
             $taxPercent    = $request->filled('tax_percent') ? (float)$request->tax_percent : null;
             $taxBase       = max(0, $subtotal - $extraDiscount + $serviceCharge);
-            $tax           = $taxPercent !== null ? round($taxBase * ($taxPercent/100), 2) : round((float)($request->tax ?? 0), 2);
+            $tax           = $taxPercent !== null ? round($taxBase * ($taxPercent / 100), 2) : round((float)($request->tax ?? 0), 2);
             $total         = round($taxBase + $tax, 2);
 
             // payments
             $payments = $request->payments ?? [];
             if (!is_array($payments) || empty($payments)) abort(422, 'Payments tidak boleh kosong');
 
-            $paid = round(array_reduce($payments, fn($c,$p)=>$c + (float)($p['amount'] ?? 0), 0.0), 2);
+            $paid = round(array_reduce($payments, fn($c, $p) => $c + (float)($p['amount'] ?? 0), 0.0), 2);
             $change = round(max(0, $paid - $total), 2);
             if ($paid < $total) abort(422, "Pembayaran kurang Rp " . number_format($total - $paid, 0, ',', '.'));
 
@@ -196,7 +196,7 @@ class SaleController extends Controller
                 } else {
                     $consQuery->where('sale_id', $sale->id);
                 }
-                $consRows = $consQuery->orderBy('id')->get(['layer_id','qty','unit_cost']);
+                $consRows = $consQuery->orderBy('id')->get(['layer_id', 'qty', 'unit_cost']);
 
                 foreach ($consRows as $c) {
                     DB::table('stock_ledger')->insert([
@@ -208,7 +208,7 @@ class SaleController extends Controller
                         'ref_id'            => $sale->id,
                         'direction'         => -1,             // OUT = -1
                         'qty'               => (float)$c->qty,
-                        'unit_cost'         => (float)$c->unit_cost,       // cost dari layer
+                        'unit_cost'         => (float)$c->unit_cost,        // cost dari layer
                         'unit_price'        => (float)$item->net_unit_price, // optional untuk analisa margin
                         'subtotal_cost'     => (float)$c->qty * (float)$c->unit_cost,
                         'note'              => "sale #{$sale->code}",
@@ -240,7 +240,8 @@ class SaleController extends Controller
                 ->update(['note' => "sale #{$sale->code}"]);
 
             return response()->json(
-                $sale->load(['items.product','payments','cashier']),
+                // tambahkan storeLocation di response create
+                $sale->load(['items.product', 'payments', 'cashier', 'storeLocation']),
                 201
             );
         });
@@ -294,14 +295,14 @@ class SaleController extends Controller
                     if (Schema::hasTable('stock_ledger')) {
                         // unit_cost ambil dari consumption kalau ada; kalau tidak, fallback dari layer
                         $unitCost = 0.0;
-                        if (Schema::hasColumn('inventory_consumptions','unit_cost') && isset($row->unit_cost)) {
+                        if (Schema::hasColumn('inventory_consumptions', 'unit_cost') && isset($row->unit_cost)) {
                             $unitCost = (float)$row->unit_cost;
                         } else {
-                            if (Schema::hasColumn('inventory_layers','unit_landed_cost') && isset($layer->unit_landed_cost)) {
+                            if (Schema::hasColumn('inventory_layers', 'unit_landed_cost') && isset($layer->unit_landed_cost)) {
                                 $unitCost = (float)$layer->unit_landed_cost;
-                            } elseif (Schema::hasColumn('inventory_layers','unit_cost') && isset($layer->unit_cost)) {
+                            } elseif (Schema::hasColumn('inventory_layers', 'unit_cost') && isset($layer->unit_cost)) {
                                 $unitCost = (float)$layer->unit_cost;
-                            } elseif (Schema::hasColumn('inventory_layers','unit_price') && isset($layer->unit_price)) {
+                            } elseif (Schema::hasColumn('inventory_layers', 'unit_price') && isset($layer->unit_price)) {
                                 $unitCost = (float)$layer->unit_price;
                             }
                         }
@@ -352,17 +353,16 @@ class SaleController extends Controller
 
             return response()->json([
                 'message' => 'Sale voided',
-                'sale'    => $sale->fresh(['items.product','payments','cashier'])
+                'sale'    => $sale->fresh(['items.product', 'payments', 'cashier'])
             ]);
         });
     }
-
 
     public function fifoBreakdown(Sale $sale)
     {
         $sale->load('items');
 
-        $items = $sale->items->map(function($it){
+        $items = $sale->items->map(function ($it) {
             $cons = DB::table('inventory_consumptions')
                 ->where('sale_item_id', $it->id)
                 ->selectRaw('SUM(qty) as qty_consumed, SUM(qty * unit_cost) as cogs_total, AVG(unit_cost) as avg_cost')

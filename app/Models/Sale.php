@@ -4,6 +4,10 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use App\Models\SaleItem;
+use App\Models\SalePayment;
+use App\Models\User;
+use App\Models\StoreLocation;
 
 class Sale extends Model
 {
@@ -25,7 +29,8 @@ class Sale extends Model
         'change'         => 'float',
     ];
 
-    public function items()    { return $this->hasMany(SaleItem::class); }
-    public function payments() { return $this->hasMany(SalePayment::class); }
-    public function cashier()  { return $this->belongsTo(User::class, 'cashier_id'); }
+    public function items()         { return $this->hasMany(SaleItem::class); }
+    public function payments()      { return $this->hasMany(SalePayment::class); }
+    public function cashier()       { return $this->belongsTo(User::class, 'cashier_id'); }
+    public function storeLocation() {return $this->belongsTo(StoreLocation::class, 'store_location_id'); }
 }
