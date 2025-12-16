@@ -128,30 +128,74 @@ class PurchaseController extends Controller
         $user   = $req->user();
         $userId = $user->id;
 
-        // AMBIL STORE USER (sesuai pola project-mu yang lain)
+        // Ambil store user
         $storeLocationId = $user->store_location_id ?? $user->store_location?->id ?? null;
 
         $po = DB::transaction(function () use ($data, $userId, $storeLocationId) {
+            // 1) Buat header Purchase
             $po = Purchase::create([
                 'purchase_number'    => Purchase::nextNumber(),
                 'supplier_id'        => $data['supplier_id'],
                 'user_id'            => $userId,
-                'store_location_id'  => $storeLocationId,   // <-- PENTING
+                'store_location_id'  => $storeLocationId,
                 'order_date'         => $data['order_date'],
                 'expected_date'      => $data['expected_date'] ?? null,
                 'status'             => 'draft',
                 'notes'              => $data['notes'] ?? null,
                 'other_cost'         => (float) ($data['other_cost'] ?? 0),
+                'subtotal'           => 0,
+                'tax_total'          => 0,
+                'grand_total'        => 0,
             ]);
 
-            // ... sisanya sama seperti punyamu (loop items, hitung subtotal, dll)
+            // 2) Loop items & insert ke purchase_items
+            $subtotal   = 0;
+            $taxTotal   = 0;
 
-            return $po->load('items.product:id,sku,name');
+            foreach ($data['items'] as $row) {
+                $qty        = (float) $row['qty_order'];
+                $unitPrice  = (float) $row['unit_price'];
+                $discount   = (float) ($row['discount'] ?? 0);
+                $tax        = (float) ($row['tax'] ?? 0);
+
+                // line_total = (qty * unit_price) - discount + tax
+                $lineTotal = ($qty * $unitPrice) - $discount + $tax;
+
+                PurchaseItem::create([
+                    'purchase_id'  => $po->id,
+                    'product_id'   => $row['product_id'],
+                    'qty_order'    => $qty,
+                    'qty_received' => 0,          // default 0 saat buat PO
+                    'unit_price'   => $unitPrice,
+                    'discount'     => $discount,
+                    'tax'          => $tax,
+                    'line_total'   => $lineTotal,
+                ]);
+
+                $subtotal += ($qty * $unitPrice) - $discount;
+                $taxTotal += $tax;
+            }
+
+            // 3) Update total di header
+            $otherCost  = (float) ($data['other_cost'] ?? 0);
+            $grandTotal = $subtotal + $taxTotal + $otherCost;
+
+            $po->update([
+                'subtotal'    => $subtotal,
+                'tax_total'   => $taxTotal,
+                'grand_total' => $grandTotal,
+            ]);
+
+            // 4) Return dengan relasi ringan (kalau perlu)
+            return $po->load([
+                'supplier:id,name',
+                'storeLocation:id,name',
+                'items.product:id,sku,name',
+            ]);
         });
 
         return response()->json($po, 201);
     }
-
 
     /**
      * APPROVE PO
