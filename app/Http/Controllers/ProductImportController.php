@@ -27,9 +27,40 @@ class ProductImportController extends Controller
     /** ========== 1) Download template XLSX dengan dropdown Category/ID → Subcategory/ID + Unit ========== */
     public function template(Request $r)
     {
-        $categories = Category::orderBy('name')->get(['id','name']);
-        $subcats    = SubCategory::orderBy('name')->get(['id','name','category_id']);
-        $units      = Unit::orderBy('name')->get(['id','name']);
+        // ============================
+        // 0. Tentukan store_location_id
+        // ============================
+        $user = $r->user();
+
+        // Prioritas: query ?store_location_id=... → lalu store dari user
+        $storeId = $r->query('store_location_id');
+        if (!$storeId && $user) {
+            $storeId = $user->store_location_id
+                ?? optional($user->storeLocation)->id
+                ?? null;
+        }
+
+        // ============================
+        // 1. Ambil master data per store
+        // ============================
+
+        // Category & SubCategory difilter sesuai store
+        $categories = Category::query()
+            ->when($storeId, function ($q) use ($storeId) {
+                $q->where('store_location_id', $storeId);
+            })
+            ->orderBy('name')
+            ->get(['id','name','store_location_id']);
+
+        $subcats = SubCategory::query()
+            ->when($storeId, function ($q) use ($storeId) {
+                $q->where('store_location_id', $storeId);
+            })
+            ->orderBy('name')
+            ->get(['id','name','category_id','store_location_id']);
+
+        // Unit masih global (tidak per store)
+        $units = Unit::orderBy('name')->get(['id','name']);
 
         $ss = new Spreadsheet();
 
@@ -38,7 +69,11 @@ class ProductImportController extends Controller
         $ws->setTitle('Products');
 
         // A: SKU, B: Name, C: Price, D: Stock, E: Unit, F: Category, G: Subcategory, H: Description
-        $ws->fromArray([['SKU','Name','Price','Stock','Unit','Category','Subcategory','Description']], null, 'A1');
+        $ws->fromArray(
+            [['SKU','Name','Price','Stock','Unit','Category','Subcategory','Description']],
+            null,
+            'A1'
+        );
         foreach (range('A','H') as $c) {
             $ws->getColumnDimension($c)->setAutoSize(true);
         }
@@ -61,7 +96,11 @@ class ProductImportController extends Controller
         // Peta kategori -> subcategories
         $byCat = [];
         foreach ($categories as $c) {
-            $byCat[$c->id] = ['name'=>$c->name, 'key'=>$sanitize($c->name), 'subs'=>[]];
+            $byCat[$c->id] = [
+                'name' => $c->name,
+                'key'  => $sanitize($c->name),
+                'subs' => [],
+            ];
         }
         foreach ($subcats as $s) {
             if (isset($byCat[$s->category_id])) {
@@ -162,6 +201,7 @@ class ProductImportController extends Controller
         ]);
     }
 
+    // helper tetap sama
     private function col(int $idx): string {
         $s = '';
         while ($idx > 0) { 
@@ -180,11 +220,13 @@ class ProductImportController extends Controller
         $sheet = null;
 
         try {
+            // mode masih boleh "upsert" atau "create-only" biar kompatibel dengan FE,
+            // tapi di bawah TIDAK dipakai untuk update.
             $req->validate([
                 'file' => 'required|file|mimes:xlsx,xls|max:10240',
                 'mode' => 'nullable|string|in:upsert,create-only',
             ]);
-            $mode = $req->input('mode', 'upsert');
+            $mode = $req->input('mode', 'upsert'); // hanya formalitas, tidak dipakai untuk logika
 
             // store dari user (wajib)
             $user    = $req->user();
@@ -225,7 +267,7 @@ class ProductImportController extends Controller
                 return $fallback;
             };
 
-            // mapping kolom: A=SKU, B=Name, C=Price, D=Stock, E=Unit, F=Category, G=Subcategory, H=Description
+            // mapping kolom: A=SKU, B=Name, C=Price, D=Stock, E:Unit, F:Category, G:Subcategory, H:Description
             $col = [
                 'sku'         => $findCol('sku', 'A'),
                 'name'        => $findCol('name', 'B'),
@@ -256,8 +298,8 @@ class ProductImportController extends Controller
                 return is_numeric($s) ? (float)$s : null;
             };
 
-            $created = 0; 
-            $updated = 0; 
+            $created = 0;
+            $updated = 0; // akan tetap 0, kita tidak lakukan update
             $errors  = [];
             $touchedIds = []; // untuk resync stok absolut di akhir
 
@@ -266,7 +308,7 @@ class ProductImportController extends Controller
                 $maxRow = count($rows);
                 for ($r = 2; $r <= $maxRow; $r++) {
                     try {
-                        $line = $rows[$r] ?? null; 
+                        $line = $rows[$r] ?? null;
                         if (!$line) continue;
 
                         $sku    = trim((string)($line[$col['sku']] ?? ''));
@@ -279,35 +321,41 @@ class ProductImportController extends Controller
                         $desc   = trim((string)($line[$col['description']] ?? ''));
 
                         // baris kosong?
-                        if ($sku==='' && $name==='' && $catNm==='' && $subNm==='' && $price===null && $stock===null && $desc==='' && $unitNm==='') {
+                        if (
+                            $sku==='' && $name==='' && $catNm==='' && $subNm==='' &&
+                            $price===null && $stock===null && $desc==='' && $unitNm===''
+                        ) {
                             continue;
                         }
-                        if ($name === '') { 
-                            $errors[] = ['row' => $r, 'message' => 'Name is required']; 
-                            continue; 
+                        if ($name === '') {
+                            $errors[] = ['row' => $r, 'message' => 'Name is required'];
+                            continue;
                         }
 
                         // resolve category/subcategory by name
-                        $categoryId    = null; 
+                        $categoryId    = null;
                         $subcategoryId = null;
                         if ($catNm !== '') {
                             $cat = $catByName[mb_strtolower($catNm)] ?? null;
-                            if (!$cat) { 
-                                $errors[] = ['row' => $r, 'message' => "Category '{$catNm}' not found"]; 
-                                continue; 
+                            if (!$cat) {
+                                $errors[] = ['row' => $r, 'message' => "Category '{$catNm}' not found"];
+                                continue;
                             }
                             $categoryId = (int)$cat->id;
 
                             if ($subNm !== '') {
                                 $sub = $subByCatAndName[$categoryId . '::' . mb_strtolower($subNm)] ?? null;
-                                if (!$sub) { 
-                                    $errors[] = ['row' => $r, 'message' => "Subcategory '{$subNm}' (Category '{$cat->name}') not found"]; 
-                                    continue; 
+                                if (!$sub) {
+                                    $errors[] = [
+                                        'row' => $r,
+                                        'message' => "Subcategory '{$subNm}' (Category '{$cat->name}') not found",
+                                    ];
+                                    continue;
                                 }
                                 $subcategoryId = (int)$sub->id;
                             }
                         } elseif ($subNm !== '') {
-                            $errors[] = ['row' => $r, 'message' => "Subcategory '{$subNm}' given but Category empty"]; 
+                            $errors[] = ['row' => $r, 'message' => "Subcategory '{$subNm}' given but Category empty"];
                             continue;
                         }
 
@@ -338,66 +386,32 @@ class ProductImportController extends Controller
                         $price = $price ?? 0.0;
                         $stock = $stock ?? 0.0;
 
-                        // create / upsert product
-                        if ($mode === 'create-only' || $sku === '') {
-                            if ($sku !== '' && Product::where('sku', $sku)->exists()) {
-                                $errors[] = ['row' => $r, 'message' => "SKU '{$sku}' already exists"];
-                                continue;
-                            }
-
-                            $p = new Product();
-                            if ($sku !== '') $p->sku = $sku;
-                            $p->name            = $name;
-                            $p->price           = $price;
-                            $p->category_id     = $categoryId;
-                            $p->sub_category_id = $subcategoryId;
-                            $p->description     = $desc ?: null;
-                            if (Schema::hasColumn($p->getTable(), 'store_location_id')) {
-                                $p->store_location_id = $storeId;
-                            }
-                            if (Schema::hasColumn($p->getTable(), 'unit_id')) {
-                                $p->unit_id = $unitId;
-                            }
-                            // kolom stock diisi 0 karena kita pakai inventory tables
-                            if (Schema::hasColumn($p->getTable(), 'stock')) $p->stock = 0;
-                            $p->save();
-                            $created++;
-
-                        } else {
-                            $p = $sku !== '' ? Product::where('sku', $sku)->first() : null;
-                            if ($p) {
-                                $p->name            = $name ?: $p->name;
-                                $p->price           = $price;
-                                $p->category_id     = $categoryId ?? $p->category_id;
-                                $p->sub_category_id = $subcategoryId ?? $p->sub_category_id;
-                                $p->description     = ($desc !== '') ? $desc : $p->description;
-
-                                // kalau unitNm diisi → update unit
-                                if ($unitNm !== '' && Schema::hasColumn($p->getTable(), 'unit_id')) {
-                                    $p->unit_id = $unitId;
-                                }
-
-                                $p->save();
-                                $updated++;
-                            } else {
-                                $p = new Product();
-                                if ($sku !== '') $p->sku = $sku;
-                                $p->name            = $name;
-                                $p->price           = $price;
-                                $p->category_id     = $categoryId;
-                                $p->sub_category_id = $subcategoryId;
-                                $p->description     = $desc ?: null;
-                                if (Schema::hasColumn($p->getTable(), 'store_location_id')) {
-                                    $p->store_location_id = $storeId;
-                                }
-                                if (Schema::hasColumn($p->getTable(), 'unit_id')) {
-                                    $p->unit_id = $unitId;
-                                }
-                                if (Schema::hasColumn($p->getTable(), 'stock')) $p->stock = 0;
-                                $p->save();
-                                $created++;
-                            }
+                        // ===============================
+                        // PURE CREATE-ONLY
+                        // ===============================
+                        if ($sku !== '' && Product::where('sku', $sku)->exists()) {
+                            // SKU sudah ada → JANGAN UPDATE, tandai error & skip
+                            $errors[] = ['row' => $r, 'message' => "SKU '{$sku}' already exists"];
+                            continue;
                         }
+
+                        $p = new Product();
+                        if ($sku !== '') $p->sku = $sku;
+                        $p->name            = $name;
+                        $p->price           = $price;
+                        $p->category_id     = $categoryId;
+                        $p->sub_category_id = $subcategoryId;
+                        $p->description     = $desc ?: null;
+                        if (Schema::hasColumn($p->getTable(), 'store_location_id')) {
+                            $p->store_location_id = $storeId;
+                        }
+                        if (Schema::hasColumn($p->getTable(), 'unit_id')) {
+                            $p->unit_id = $unitId;
+                        }
+                        // kolom stock diisi 0 karena kita pakai inventory tables
+                        if (Schema::hasColumn($p->getTable(), 'stock')) $p->stock = 0;
+                        $p->save();
+                        $created++;
 
                         // ===============================
                         // STOK AWAL → INVENTORY + LEDGER
@@ -411,11 +425,10 @@ class ProductImportController extends Controller
                                 'note'              => 'Stok awal (import excel)',
                                 'store_location_id' => $storeId,
                                 'source_type'       => 'IMPORT_OPEN',
-                                // set false supaya ledger kita tulis sendiri dengan pasti
                                 'with_ledger'       => false,
                             ]);
 
-                            // 2) Pastikan ledger ADA (adaptif ke skema)
+                            // 2) Ledger (kalau tabelnya ada)
                             if (Schema::hasTable('stock_ledger')) {
                                 $lcols = Schema::getColumnListing('stock_ledger');
                                 $has   = fn($n) => in_array($n, $lcols, true);
@@ -442,34 +455,32 @@ class ProductImportController extends Controller
                                 }
 
                                 if (!$exists) {
-                                    $row = ['product_id' => (int)$p->id];
-                                    if ($storeCol) $row[$storeCol] = $storeId;
-                                    if ($refType)  $row[$refType]  = 'IMPORT_OPEN';
-                                    if ($refIdCol) $row[$refIdCol] = $layerId;
+                                    $rowLd = ['product_id' => (int)$p->id];
+                                    if ($storeCol) $rowLd[$storeCol] = $storeId;
+                                    if ($refType)  $rowLd[$refType]  = 'IMPORT_OPEN';
+                                    if ($refIdCol) $rowLd[$refIdCol] = $layerId;
 
-                                    // Isi kolom quantity sesuai skema
                                     if ($hasInOut) {
-                                        $row['qty_in']  = (float)$stock;
-                                        $row['qty_out'] = 0;
+                                        $rowLd['qty_in']  = (float)$stock;
+                                        $rowLd['qty_out'] = 0;
                                     } elseif ($hasQty && $hasDir) {
-                                        $row['qty'] = (float)$stock;
-                                        $row['direction'] = 1; // masuk
+                                        $rowLd['qty']      = (float)$stock;
+                                        $rowLd['direction'] = 1;
                                     } elseif ($hasQty) {
-                                        $row['qty'] = (float)$stock;
+                                        $rowLd['qty'] = (float)$stock;
                                     }
 
-                                    // Biaya & meta opsional
-                                    if ($has('unit_cost'))      $row['unit_cost']      = is_numeric($price) ? (float)$price : 0;
-                                    if ($has('unit_price'))     $row['unit_price']     = is_numeric($price) ? (float)$price : 0;
-                                    if ($has('subtotal_cost'))  $row['subtotal_cost']  = (float)$stock * (is_numeric($price) ? (float)$price : 0);
-                                    if ($has('estimated_cost')) $row['estimated_cost'] = (float)$stock * (is_numeric($price) ? (float)$price : 0);
-                                    if ($has('note'))           $row['note']           = 'Stok awal (import excel)';
-                                    if ($has('user_id'))        $row['user_id']        = auth()->id() ?: null;
-                                    if ($has('layer_id'))       $row['layer_id']       = $layerId;
-                                    if ($has('created_at'))     $row['created_at']     = now();
-                                    if ($has('updated_at'))     $row['updated_at']     = now();
+                                    if ($has('unit_cost'))      $rowLd['unit_cost']      = is_numeric($price) ? (float)$price : 0;
+                                    if ($has('unit_price'))     $rowLd['unit_price']     = is_numeric($price) ? (float)$price : 0;
+                                    if ($has('subtotal_cost'))  $rowLd['subtotal_cost']  = (float)$stock * (is_numeric($price) ? (float)$price : 0);
+                                    if ($has('estimated_cost')) $rowLd['estimated_cost'] = (float)$stock * (is_numeric($price) ? (float)$price : 0);
+                                    if ($has('note'))           $rowLd['note']           = 'Stok awal (import excel)';
+                                    if ($has('user_id'))        $rowLd['user_id']        = auth()->id() ?: null;
+                                    if ($has('layer_id'))       $rowLd['layer_id']       = $layerId;
+                                    if ($has('created_at'))     $rowLd['created_at']     = now();
+                                    if ($has('updated_at'))     $rowLd['updated_at']     = now();
 
-                                    DB::table('stock_ledger')->insert($row);
+                                    DB::table('stock_ledger')->insert($rowLd);
                                 }
                             }
                         }
@@ -485,13 +496,13 @@ class ProductImportController extends Controller
                 // ===========================
                 if (Schema::hasTable('inventory_layers') && !empty($touchedIds)) {
                     $hasRemain = Schema::hasColumn('inventory_layers','qty_remaining')
-                               || Schema::hasColumn('inventory_layers','remaining_qty')
-                               || Schema::hasColumn('inventory_layers','remaining_quantity');
+                            || Schema::hasColumn('inventory_layers','remaining_qty')
+                            || Schema::hasColumn('inventory_layers','remaining_quantity');
 
                     if ($hasRemain && Schema::hasColumn('products','stock')) {
                         $remCol = Schema::hasColumn('inventory_layers','qty_remaining')      ? 'qty_remaining'
-                                 : (Schema::hasColumn('inventory_layers','remaining_qty')     ? 'remaining_qty'
-                                 : 'remaining_quantity');
+                                : (Schema::hasColumn('inventory_layers','remaining_qty')     ? 'remaining_qty'
+                                : 'remaining_quantity');
 
                         foreach (array_unique($touchedIds) as $pid) {
                             $sumRemain = (float) DB::table('inventory_layers')->where('product_id', $pid)->sum($remCol);
@@ -514,7 +525,7 @@ class ProductImportController extends Controller
                 'status'  => 'ok',
                 'summary' => [
                     'created'               => $created,
-                    'updated'               => $updated,
+                    'updated'               => $updated,  // selalu 0
                     'errors'                => $errors,
                     'total_rows_processed'  => ($created + $updated + count($errors)),
                 ],

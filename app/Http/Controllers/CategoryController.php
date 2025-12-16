@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Category;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class CategoryController extends Controller
 {
@@ -47,18 +48,31 @@ class CategoryController extends Controller
     {
         $user = $request->user();
 
-        $data = $request->validate([
-            'name'        => 'required|string|max:100|unique:categories,name',
-            'description' => 'nullable|string',
-            'store_location_id' => 'nullable|exists:store_locations,id',
-        ]);
+        // Tentukan store_location_id yang akan dipakai
+        $storeId = $request->input('store_location_id');
 
-        // Kalau FE nggak kirim store_location_id → pakai store user
-        if (empty($data['store_location_id']) && $user) {
-            $data['store_location_id'] = $user->store_location_id
+        if (!$storeId && $user) {
+            $storeId = $user->store_location_id
                 ?? optional($user->storeLocation)->id
                 ?? null;
         }
+
+        $data = $request->validate([
+            'name'        => [
+                'required',
+                'string',
+                'max:100',
+                // unik per store
+                Rule::unique('categories')->where(function ($q) use ($storeId) {
+                    return $q->where('store_location_id', $storeId);
+                }),
+            ],
+            'description'      => 'nullable|string',
+            'store_location_id'=> 'nullable|exists:store_locations,id',
+        ]);
+
+        // Paksa store_location_id yang dipakai (kalau FE nggak kirim)
+        $data['store_location_id'] = $storeId;
 
         $category = Category::create($data);
 
@@ -74,11 +88,31 @@ class CategoryController extends Controller
     // PATCH/PUT /api/categories/{category}
     public function update(Request $request, Category $category)
     {
+        // store yang akan dipakai untuk cek unique:
+        // kalau user ganti store_location_id di request, pakai itu,
+        // kalau tidak, pakai store_location_id existing di row
+        $storeIdForUnique = $request->input('store_location_id', $category->store_location_id);
+
         $data = $request->validate([
-            'name'        => 'sometimes|required|string|max:100|unique:categories,name,' . $category->id,
-            'description' => 'sometimes|nullable|string',
+            'name' => [
+                'sometimes',
+                'required',
+                'string',
+                'max:100',
+                Rule::unique('categories')
+                    ->ignore($category->id) // abaikan diri sendiri
+                    ->where(function ($q) use ($storeIdForUnique) {
+                        return $q->where('store_location_id', $storeIdForUnique);
+                    }),
+            ],
+            'description'       => 'sometimes|nullable|string',
             'store_location_id' => 'sometimes|nullable|exists:store_locations,id',
         ]);
+
+        // Kalau store_location_id tidak dikirim, biarkan nilai lama
+        if (!array_key_exists('store_location_id', $data)) {
+            $data['store_location_id'] = $category->store_location_id;
+        }
 
         $category->update($data);
 

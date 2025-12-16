@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\SubCategory;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class SubCategoryController extends Controller
 {
@@ -52,19 +53,35 @@ class SubCategoryController extends Controller
     {
         $user = $request->user();
 
-        $data = $request->validate([
-            'name'        => 'required|string|max:100',
-            'description' => 'nullable|string',
-            'category_id' => 'required|exists:categories,id',
-            'store_location_id' => 'nullable|exists:store_locations,id',
-        ]);
+        // Tentukan store yang dipakai untuk validasi & simpan
+        $storeId = $request->input('store_location_id');
 
-        // Kalau FE tidak kirim store_location_id → ikut store user
-        if (empty($data['store_location_id']) && $user) {
-            $data['store_location_id'] = $user->store_location_id
+        if (!$storeId && $user) {
+            $storeId = $user->store_location_id
                 ?? optional($user->storeLocation)->id
                 ?? null;
         }
+
+        $categoryIdForRule = $request->input('category_id');
+
+        $data = $request->validate([
+            'name'        => [
+                'required',
+                'string',
+                'max:100',
+                // unik: per store + category + name
+                Rule::unique('sub_categories')->where(function ($q) use ($storeId, $categoryIdForRule) {
+                    return $q->where('store_location_id', $storeId)
+                            ->where('category_id', $categoryIdForRule);
+                }),
+            ],
+            'description'      => 'nullable|string',
+            'category_id'      => 'required|exists:categories,id',
+            'store_location_id'=> 'nullable|exists:store_locations,id',
+        ]);
+
+        // Paksa store_location_id yang dipakai
+        $data['store_location_id'] = $storeId;
 
         $sub = SubCategory::create($data);
 
@@ -80,12 +97,38 @@ class SubCategoryController extends Controller
     // PATCH/PUT /api/sub-categories/{subCategory}
     public function update(Request $request, SubCategory $subCategory)
     {
+        // store & category yang dipakai untuk cek unique:
+        // kalau user kirim baru → pakai yang baru, kalau tidak → pakai yang lama
+        $storeIdForUnique    = $request->input('store_location_id', $subCategory->store_location_id);
+        $categoryIdForUnique = $request->input('category_id', $subCategory->category_id);
+
         $data = $request->validate([
-            'name'        => 'sometimes|required|string|max:100',
-            'description' => 'sometimes|nullable|string',
-            'category_id' => 'sometimes|required|exists:categories,id',
-            'store_location_id' => 'sometimes|nullable|exists:store_locations,id',
+            'name'        => [
+                'sometimes',
+                'required',
+                'string',
+                'max:100',
+                Rule::unique('sub_categories')
+                    ->ignore($subCategory->id) // abaikan diri sendiri
+                    ->where(function ($q) use ($storeIdForUnique, $categoryIdForUnique) {
+                        return $q->where('store_location_id', $storeIdForUnique)
+                                ->where('category_id', $categoryIdForUnique);
+                    }),
+            ],
+            'description'      => 'sometimes|nullable|string',
+            'category_id'      => 'sometimes|required|exists:categories,id',
+            'store_location_id'=> 'sometimes|nullable|exists:store_locations,id',
         ]);
+
+        // Kalau store_location_id tidak dikirim, biarkan yang lama
+        if (!array_key_exists('store_location_id', $data)) {
+            $data['store_location_id'] = $subCategory->store_location_id;
+        }
+
+        // Kalau category_id tidak dikirim, pakai yang lama (optional, biasanya sudah default begitu)
+        if (!array_key_exists('category_id', $data)) {
+            $data['category_id'] = $subCategory->category_id;
+        }
 
         $subCategory->update($data);
 
