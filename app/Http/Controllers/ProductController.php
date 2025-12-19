@@ -72,12 +72,13 @@ class ProductController extends Controller
             $sort = 'id';
         }
 
-        $search        = trim((string) $request->input('search', ''));
-        $skuExact      = trim((string) $request->input('sku', ''));
-        $categoryId    = $request->input('category_id');
-        $subCategoryId = $request->input('sub_category_id');
-        $minPrice      = $request->input('min_price');
-        $maxPrice      = $request->input('max_price');
+        $search           = trim((string) $request->input('search', ''));
+        $skuExact         = trim((string) $request->input('sku', ''));
+        $categoryId       = $request->input('category_id');
+        $subCategoryId    = $request->input('sub_category_id');
+        $minPrice         = $request->input('min_price');
+        $maxPrice         = $request->input('max_price');
+        $inventoryTypeReq = $request->input('inventory_type'); // optional filter: stock / service / non_stock
 
         // ⬇️ BACA store_location_id *atau* store_id, lalu fallback ke store user
         $storeIdFromReq =
@@ -108,13 +109,14 @@ class ProductController extends Controller
                 'products.created_at',
                 'products.updated_at',
                 'products.unit_id',
+                'products.inventory_type', // ⬅️ penting buat POS (stock vs non-stock)
                 DB::raw('(SELECT name FROM units WHERE units.id = products.unit_id LIMIT 1) AS unit_name'),
             ])
             ->when($skuExact !== '', fn($qq) => $qq->where('sku', $skuExact))
             ->when($search !== '', function ($qq) use ($search) {
                 $qq->where(function ($w) use ($search) {
                     $w->where('name', 'like', "%{$search}%")
-                    ->orWhere('sku', 'like', "%{$search}%");
+                      ->orWhere('sku', 'like', "%{$search}%");
                 });
             })
             ->when($categoryId, function ($qq) use ($categoryId) {
@@ -128,7 +130,10 @@ class ProductController extends Controller
                     : $qq->where('sub_category_id', $subCategoryId);
             })
             ->when($minPrice !== null && $minPrice !== '', fn($qq) => $qq->where('price', '>=', (float) $minPrice))
-            ->when($maxPrice !== null && $maxPrice !== '', fn($qq) => $qq->where('price', '<=', (float) $maxPrice));
+            ->when($maxPrice !== null && $maxPrice !== '', fn($qq) => $qq->where('price', '<=', (float) $maxPrice))
+            ->when($inventoryTypeReq !== null && $inventoryTypeReq !== '', function ($qq) use ($inventoryTypeReq) {
+                $qq->where('inventory_type', $inventoryTypeReq);
+            });
 
         // ⬇️ FILTER store
         if ($storeId) {
@@ -160,7 +165,6 @@ class ProductController extends Controller
         ]);
     }
 
-
     public function store(Request $req)
     {
         $user = $req->user();
@@ -174,6 +178,7 @@ class ProductController extends Controller
             'sub_category_id'   => 'nullable|integer',
             'description'       => 'nullable|string',
             'unit_id'           => 'nullable|exists:units,id', // ← unit dari master units
+            'inventory_type'    => 'nullable|string|in:stock,service,non_stock', // ⬅️ pakai inventory_type
             // penting: nullable, bukan sometimes
             'image'             => 'nullable|file|mimes:jpg,jpeg,png,webp,svg,svg+xml|max:5120',
             'store_location_id' => 'nullable|integer|exists:store_locations,id',
@@ -216,6 +221,12 @@ class ProductController extends Controller
                     $unitId = $defaultUnit?->id;
                 }
 
+                // 2c) Tentukan inventory_type (default: stock)
+                $inventoryType = strtolower((string)($data['inventory_type'] ?? 'stock'));
+                if (! in_array($inventoryType, ['stock','service','non_stock'], true)) {
+                    $inventoryType = 'stock';
+                }
+
                 // 3) Buat produk
                 $productId = DB::table('products')->insertGetId([
                     'sku'               => $data['sku'] ?? null,
@@ -226,16 +237,18 @@ class ProductController extends Controller
                     'description'       => $data['description'] ?? null,
                     'unit_id'           => $unitId,
                     'image_url'         => $imagePath,
-                    'stock'             => 0,
+                    'stock'             => 0, // ⬅️ kolom stock akan disinkron dari layers kalau tipe stock
+                    'inventory_type'    => $inventoryType,
                     'store_location_id' => $storeLocationId,
                     'created_by'        => $user->id,
                     'created_at'        => now(),
                     'updated_at'        => now(),
                 ]);
 
-                // 4) Stok awal (jika ada)
+                // 4) Stok awal (jika ada) — HANYA untuk produk inventory_type = stock
                 $initQty = (float) ($data['stock'] ?? 0);
-                if ($initQty > 0) {
+
+                if ($initQty > 0 && $inventoryType === 'stock') {
                     \App\Support\InventoryQuick::addInboundLayer([
                         'product_id'        => $productId,
                         'qty'               => $initQty,
@@ -291,18 +304,19 @@ class ProductController extends Controller
                             'updated_at'        => now(),
                         ]);
                     }
+
+                    // 5) Sinkronkan kolom stock dari layers (hanya meaningful kalau tipe stock)
+                    $sumRemain = (float) DB::table('inventory_layers')
+                        ->where('product_id', $productId)
+                        ->sum('qty_remaining');
+
+                    DB::table('products')->where('id', $productId)->update([
+                        'stock'      => $sumRemain,
+                        'updated_at' => now(),
+                    ]);
                 }
 
-                // 5) Sinkronkan kolom stock dari layers
-                $sumRemain = (float) DB::table('inventory_layers')
-                    ->where('product_id', $productId)
-                    ->sum('qty_remaining');
-
-                DB::table('products')->where('id', $productId)->update([
-                    'stock'      => $sumRemain,
-                    'updated_at' => now(),
-                ]);
-
+                // untuk produk non-stock, stock tetap 0. POS akan anggap unlimited dari inventory_type di FE.
                 $product = DB::table('products')->where('id', $productId)->first();
 
                 return response()->json([
@@ -326,62 +340,62 @@ class ProductController extends Controller
         return response()->json($product);
     }
 
-public function update(UpdateProductRequest $request, Product $product)
-{
-    $user = $request->user();
-    $data = $request->validated(); // sudah termasuk unit_id
+    public function update(UpdateProductRequest $request, Product $product)
+    {
+        $user = $request->user();
+        $data = $request->validated(); // sudah termasuk unit_id & inventory_type kalau di-form-kan
 
-    // Normalisasi beberapa field ("" -> null)
-    foreach (['description', 'category_id', 'sub_category_id', 'unit_id'] as $k) {
-        if (!Arr::has($data, $k) || $data[$k] === '') {
-            $data[$k] = null;
-        }
-    }
-
-    // Upload image (opsional)
-    if ($request->hasFile('image')) {
-        $this->tryDeletePublicProductImage($product->image_url);
-        $data['image_url'] = $this->putPublicProductImage($request->file('image'));
-
-        // jangan kirim field 'image' (UploadedFile) ke update()
-        unset($data['image']);
-    }
-
-    // Aturan update admin vs non-admin
-    if ($user->role !== 'admin') {
-        // non-admin hanya boleh edit produk dari store-nya sendiri
-        if (empty($product->store_location_id) || $product->store_location_id !== $user->store_location_id) {
-            return response()->json(['message' => 'Forbidden'], 403);
+        // Normalisasi beberapa field ("" -> null)
+        foreach (['description', 'category_id', 'sub_category_id', 'unit_id'] as $k) {
+            if (!Arr::has($data, $k) || $data[$k] === '') {
+                $data[$k] = null;
+            }
         }
 
-        // non-admin tidak boleh mengubah store/scope
-        unset($data['store_location_id'], $data['scope']);
-    } else {
-        // admin: boleh pakai scope=global, kalau tidak → biarkan store_location_id sekarang
-        $scope = $request->input('scope'); // 'global' | 'store' | null
+        // Upload image (opsional)
+        if ($request->hasFile('image')) {
+            $this->tryDeletePublicProductImage($product->image_url);
+            $data['image_url'] = $this->putPublicProductImage($request->file('image'));
 
-        if ($scope === 'global') {
-            $product->store_location_id = null;
+            // jangan kirim field 'image' (UploadedFile) ke update()
+            unset($data['image']);
         }
 
-        unset($data['store_location_id'], $data['scope']);
+        // Aturan update admin vs non-admin
+        if ($user->role !== 'admin') {
+            // non-admin hanya boleh edit produk dari store-nya sendiri
+            if (empty($product->store_location_id) || $product->store_location_id !== $user->store_location_id) {
+                return response()->json(['message' => 'Forbidden'], 403);
+            }
+
+            // non-admin tidak boleh mengubah store/scope
+            unset($data['store_location_id'], $data['scope']);
+        } else {
+            // admin: boleh pakai scope=global, kalau tidak → biarkan store_location_id sekarang
+            $scope = $request->input('scope'); // 'global' | 'store' | null
+
+            if ($scope === 'global') {
+                $product->store_location_id = null;
+            }
+
+            unset($data['store_location_id'], $data['scope']);
+        }
+
+        // Di UPDATE:
+        // - inventory_type boleh diubah (misal dari stock -> service) kalau kamu buka di form.
+        // - kalau mau batasi non-admin tidak boleh ganti inventory_type, tinggal unset di blok di atas.
+
+        $product->fill($data);
+        $product->save();
+
+        // load relasi buat FE
+        $product->load(['category', 'subCategory', 'unit', 'storeLocation']);
+
+        return response()->json([
+            'message' => 'Product updated',
+            'data'    => $product,
+        ]);
     }
-
-    // ❗ Di UPDATE kita TIDAK pakai default unit lagi
-    //    Kalau user kosongkan unit di UI → akan tersimpan null (tanpa unit).
-    //    Kalau user pilih unit lain → unit_id berisi ID sesuai pilihan dropdown.
-    // Tinggal fill & save:
-    $product->fill($data);
-    $product->save();
-
-    // load relasi buat FE
-    $product->load(['category', 'subCategory', 'unit', 'storeLocation']);
-
-    return response()->json([
-        'message' => 'Product updated',
-        'data'    => $product,
-    ]);
-}
 
     public function destroy(Product $product)
     {

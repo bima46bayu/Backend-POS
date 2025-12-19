@@ -4,21 +4,13 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\StorePurchaseRequest;
 use App\Http\Requests\PurchaseReceiveRequest; // kalau kamu pakai ini di tempat lain
-use App\Models\{Purchase, PurchaseItem};
+use App\Models\{Purchase, PurchaseItem, Product};
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class PurchaseController extends Controller
 {
-    /**
-     * LIST PO (ringan & cepat)
-     * - Tidak meload items.product (berat) di list
-     * - Menyertakan supplier & store_location (id,name)
-     * - Menyertakan items_count dan qty_total via aggregate
-     * - Payload dinormalisasi: { items, meta, links }
-     */
-    // app/Http/Controllers/PurchaseController.php
-
     public function index(Request $r)
     {
         $perPage = (int) ($r->per_page ?? 10);
@@ -27,7 +19,6 @@ class PurchaseController extends Controller
         $search = trim((string) $r->search);
 
         $q = Purchase::query()
-            // pilih kolom yang diperlukan saja (PASTIKAN ada store_location_id)
             ->select([
                 'purchases.id',
                 'purchases.purchase_number',
@@ -45,21 +36,17 @@ class PurchaseController extends Controller
                 'purchases.grand_total',
                 'purchases.created_at',
             ])
-            // supplier & user ringan
             ->with([
                 'supplier:id,name',
-                'user:id,name,store_location_id', // optional tapi enak buat debug
+                'user:id,name,store_location_id',
             ])
-            // jumlah baris item per PO
             ->withCount('items')
-            // total qty order (opsional)
             ->selectSub(
                 DB::table('purchase_items')
                     ->selectRaw('COALESCE(SUM(qty_order),0)')
                     ->whereColumn('purchase_items.purchase_id', 'purchases.id'),
                 'qty_total'
             )
-            // ===== FILTER DARI FE =====
             ->when($r->status, function ($qq, $v) {
                 $qq->where('purchases.status', $v);
             })
@@ -72,11 +59,9 @@ class PurchaseController extends Controller
             ->when($r->to, function ($qq, $v) {
                 $qq->whereDate('purchases.order_date', '<=', $v);
             })
-            // FILTER STORE DARI FE (PENTING)
             ->when($r->store_location_id, function ($qq, $v) {
                 $qq->where('purchases.store_location_id', $v);
             })
-            // SEARCH: nomor PO / nama supplier
             ->when($search !== '', function ($qq) use ($search) {
                 $qq->where(function ($sub) use ($search) {
                     $sub->where('purchases.purchase_number', 'like', "%{$search}%")
@@ -85,7 +70,6 @@ class PurchaseController extends Controller
                         });
                 });
             })
-            // sort
             ->orderByDesc('purchases.id');
 
         $p = $q->paginate($perPage)->appends($r->query());
@@ -105,11 +89,6 @@ class PurchaseController extends Controller
         ]);
     }
 
-
-    /**
-     * DETAIL PO (panggil hanya saat user buka modal/halaman detail)
-     * Tetap lengkap dengan items.product.
-     */
     public function show(Purchase $purchase)
     {
         return $purchase->load([
@@ -119,20 +98,15 @@ class PurchaseController extends Controller
         ]);
     }
 
-    /**
-     * CREATE PO (draft)
-     */
     public function store(StorePurchaseRequest $req)
     {
         $data   = $req->validated();
         $user   = $req->user();
         $userId = $user->id;
 
-        // Ambil store user
         $storeLocationId = $user->store_location_id ?? $user->store_location?->id ?? null;
 
         $po = DB::transaction(function () use ($data, $userId, $storeLocationId) {
-            // 1) Buat header Purchase
             $po = Purchase::create([
                 'purchase_number'    => Purchase::nextNumber(),
                 'supplier_id'        => $data['supplier_id'],
@@ -148,24 +122,36 @@ class PurchaseController extends Controller
                 'grand_total'        => 0,
             ]);
 
-            // 2) Loop items & insert ke purchase_items
-            $subtotal   = 0;
-            $taxTotal   = 0;
+            $subtotal = 0;
+            $taxTotal = 0;
 
             foreach ($data['items'] as $row) {
-                $qty        = (float) $row['qty_order'];
-                $unitPrice  = (float) $row['unit_price'];
-                $discount   = (float) ($row['discount'] ?? 0);
-                $tax        = (float) ($row['tax'] ?? 0);
+                $product = Product::find($row['product_id']);
+                if (! $product) {
+                    throw ValidationException::withMessages([
+                        'items' => "Product ID {$row['product_id']} tidak ditemukan.",
+                    ]);
+                }
 
-                // line_total = (qty * unit_price) - discount + tax
+                // ❗ LARANG NON-STOCK MASUK PO
+                if (! $product->isStockTracked()) {
+                    throw ValidationException::withMessages([
+                        'items' => "Produk '{$product->name}' adalah non-stock dan tidak boleh dimasukkan ke Purchase Order.",
+                    ]);
+                }
+
+                $qty       = (float) $row['qty_order'];
+                $unitPrice = (float) $row['unit_price'];
+                $discount  = (float) ($row['discount'] ?? 0);
+                $tax       = (float) ($row['tax'] ?? 0);
+
                 $lineTotal = ($qty * $unitPrice) - $discount + $tax;
 
                 PurchaseItem::create([
                     'purchase_id'  => $po->id,
                     'product_id'   => $row['product_id'],
                     'qty_order'    => $qty,
-                    'qty_received' => 0,          // default 0 saat buat PO
+                    'qty_received' => 0,
                     'unit_price'   => $unitPrice,
                     'discount'     => $discount,
                     'tax'          => $tax,
@@ -176,7 +162,6 @@ class PurchaseController extends Controller
                 $taxTotal += $tax;
             }
 
-            // 3) Update total di header
             $otherCost  = (float) ($data['other_cost'] ?? 0);
             $grandTotal = $subtotal + $taxTotal + $otherCost;
 
@@ -186,7 +171,6 @@ class PurchaseController extends Controller
                 'grand_total' => $grandTotal,
             ]);
 
-            // 4) Return dengan relasi ringan (kalau perlu)
             return $po->load([
                 'supplier:id,name',
                 'storeLocation:id,name',
@@ -197,9 +181,6 @@ class PurchaseController extends Controller
         return response()->json($po, 201);
     }
 
-    /**
-     * APPROVE PO
-     */
     public function approve(Request $r, Purchase $purchase)
     {
         if ($purchase->status !== 'draft') {
@@ -221,9 +202,6 @@ class PurchaseController extends Controller
         ]);
     }
 
-    /**
-     * CANCEL PO
-     */
     public function cancel(Purchase $purchase)
     {
         if (in_array($purchase->status, ['closed', 'partially_received'])) {
@@ -235,11 +213,6 @@ class PurchaseController extends Controller
         return response()->json(['message' => 'Purchase canceled']);
     }
 
-    /**
-     * (OPSIONAL) BATCH DETAIL
-     * Ambil banyak detail sekaligus: GET /api/purchases/batch?ids[]=1&ids[]=2
-     * Pakai jika memang perlu prefetch detail untuk beberapa baris—lebih hemat daripada N request.
-     */
     public function batch(Request $r)
     {
         $ids = array_filter(

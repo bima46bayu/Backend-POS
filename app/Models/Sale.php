@@ -14,9 +14,18 @@ class Sale extends Model
     use HasFactory;
 
     protected $fillable = [
-        'code','cashier_id','customer_name',
-        'subtotal','discount','service_charge','tax',
-        'total','paid','change','status'
+        'code',
+        'cashier_id',
+        'store_location_id',   // ✅ TAMBAH INI
+        'customer_name',
+        'subtotal',
+        'discount',
+        'service_charge',
+        'tax',
+        'total',
+        'paid',
+        'change',
+        'status',
     ];
 
     protected $casts = [
@@ -29,8 +38,23 @@ class Sale extends Model
         'change'         => 'float',
     ];
 
-    public function items()         { return $this->hasMany(SaleItem::class); }
-    public function payments()      { return $this->hasMany(SalePayment::class); }
-    public function cashier()       { return $this->belongsTo(User::class, 'cashier_id'); }
-    public function storeLocation() {return $this->belongsTo(StoreLocation::class, 'store_location_id'); }
+    public function items()
+    {
+        return $this->hasMany(SaleItem::class);
+    }
+
+    public function payments()
+    {
+        return $this->hasMany(SalePayment::class);
+    }
+
+    public function cashier()
+    {
+        return $this->belongsTo(User::class, 'cashier_id');
+    }
+
+    public function storeLocation()
+    {
+        return $this->belongsTo(StoreLocation::class, 'store_location_id');
+    }
 }

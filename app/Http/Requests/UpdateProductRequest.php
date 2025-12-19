@@ -38,6 +38,8 @@ class UpdateProductRequest extends FormRequest
 
             // image opsional
             'image'           => ['sometimes', 'file', 'mimes:jpg,jpeg,png,webp,svg,svg+xml', 'max:5120'],
+            
+            'inventory_type' => ['required', 'in:stock,non_stock'],
         ];
     }
 

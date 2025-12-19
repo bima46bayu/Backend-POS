@@ -16,7 +16,8 @@ class StoreProductRequest extends FormRequest
             'price' => 'required|numeric|min:0',
             'stock' => 'nullable|integer|min:0',
             'image_url' => 'nullable|url',
-            'image' => 'nullable|image|mimes:jpg,jpeg,png|max:2048'
+            'image' => 'nullable|image|mimes:jpg,jpeg,png|max:2048',
+            'inventory_type' => ['required', 'in:stock,non_stock'],
         ];
     }
 }

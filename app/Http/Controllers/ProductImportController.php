@@ -18,13 +18,12 @@ use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 use PhpOffice\PhpSpreadsheet\Cell\DataValidation;
 use PhpOffice\PhpSpreadsheet\NamedRange;
 use PhpOffice\PhpSpreadsheet\Worksheet\Worksheet;
-use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 use PhpOffice\PhpSpreadsheet\Reader\Xlsx as XlsxReader;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 
 class ProductImportController extends Controller
 {
-    /** ========== 1) Download template XLSX dengan dropdown Category/ID → Subcategory/ID + Unit ========== */
+    /** ========== 1) Download template XLSX dengan dropdown Category/ID → Subcategory/ID + Unit + Inventory Type ========== */
     public function template(Request $r)
     {
         // ============================
@@ -64,22 +63,22 @@ class ProductImportController extends Controller
 
         $ss = new Spreadsheet();
 
-        // ========== Sheet Products ==========
+        // ========== Sheet Products ========== //
         $ws = $ss->getActiveSheet();
         $ws->setTitle('Products');
 
-        // A: SKU, B: Name, C: Price, D: Stock, E: Unit, F: Category, G: Subcategory, H: Description
+        // A: SKU, B: Name, C: Price, D: Stock, E: Inventory Type, F: Unit, G: Category, H: Subcategory, I: Description
         $ws->fromArray(
-            [['SKU','Name','Price','Stock','Unit','Category','Subcategory','Description']],
+            [['SKU','Name','Price','Stock','Inventory Type','Unit','Category','Subcategory','Description']],
             null,
             'A1'
         );
-        foreach (range('A','H') as $c) {
+        foreach (range('A','I') as $c) {
             $ws->getColumnDimension($c)->setAutoSize(true);
         }
         $ws->freezePane('A2');
 
-        // ========== Sheet Categories (helper) ==========
+        // ========== Sheet Categories (helper) ========== //
         $helper = new Worksheet($ss, 'Categories');
         $ss->addSheet($helper);
 
@@ -137,7 +136,7 @@ class ProductImportController extends Controller
             $rIdx++;
         }
 
-        // ========== Sheet Units (helper) ==========
+        // ========== Sheet Units (helper) ========== //
         $unitSheet = new Worksheet($ss, 'Units');
         $ss->addSheet($unitSheet);
 
@@ -151,8 +150,8 @@ class ProductImportController extends Controller
         // Range absolut untuk unit: Units!A2:A{unitLastRow}
         $unitRange = "=Units!\$A\$2:\$A\${$unitLastRow}";
 
-        // ========== Data Validation ==========
-        $startRow = 2; 
+        // ========== Data Validation ========== //
+        $startRow = 2;
         $endRow   = 1000;
 
         // Range ABSOLUT untuk kategori: Categories!A2:A{lastRow}
@@ -162,32 +161,43 @@ class ProductImportController extends Controller
         $keysAbs  = "\$B\$2:\$B\$".$lastRow;
 
         for ($row = $startRow; $row <= $endRow; $row++) {
-            // Dropdown Unit (E)
-            $dvUnit = $ws->getCell("E{$row}")->getDataValidation();
+            // Dropdown Inventory Type (E) → "stock" / "non_stock"
+            $dvInv = $ws->getCell("E{$row}")->getDataValidation();
+            $dvInv->setType(DataValidation::TYPE_LIST)
+                ->setAllowBlank(true)
+                ->setShowDropDown(true)
+                ->setShowErrorMessage(true)
+                ->setErrorTitle('Invalid Inventory Type')
+                ->setError('Use: stock / non_stock')
+                ->setFormula1('"stock,non_stock"');
+
+            // Dropdown Unit (F)
+            $dvUnit = $ws->getCell("F{$row}")->getDataValidation();
             $dvUnit->setType(DataValidation::TYPE_LIST)
                 ->setAllowBlank(true)->setShowDropDown(true)
                 ->setShowErrorMessage(true)->setErrorTitle('Invalid Unit')->setError('Select from the list.')
                 ->setFormula1($unitRange);
 
-            // Dropdown Category (F)
-            $dvCat = $ws->getCell("F{$row}")->getDataValidation();
+            // Dropdown Category (G)
+            $dvCat = $ws->getCell("G{$row}")->getDataValidation();
             $dvCat->setType(DataValidation::TYPE_LIST)
                 ->setAllowBlank(true)->setShowDropDown(true)
                 ->setShowErrorMessage(true)->setErrorTitle('Invalid Category')->setError('Select from the list.')
                 ->setFormula1($catRange);
 
-            // Dropdown Subcategory (G) — cascading via key
-            $dvSub = $ws->getCell("G{$row}")->getDataValidation();
+            // Dropdown Subcategory (H) — cascading via key
+            $dvSub = $ws->getCell("H{$row}")->getDataValidation();
             $dvSub->setType(DataValidation::TYPE_LIST)
                 ->setAllowBlank(true)->setShowDropDown(true)
                 ->setShowErrorMessage(true)->setErrorTitle('Invalid Subcategory')->setError('Select based on Category.')
-                ->setFormula1('=INDIRECT(INDEX(Categories!'.$keysAbs.', MATCH($F'.$row.', Categories!'.$namesAbs.', 0)))');
+                ->setFormula1('=INDIRECT(INDEX(Categories!'.$keysAbs.', MATCH($G'.$row.', Categories!'.$namesAbs.', 0)))');
         }
 
-        // (Opsional) Tooltip
-        $ws->getComment('F1')->getText()->createTextRun('Pilih dari daftar.');
-        $ws->getComment('G1')->getText()->createTextRun('Mengikuti kategori kolom F.');
-        $ws->getComment('E1')->getText()->createTextRun('Pilih satuan dari daftar.');
+        // Tooltip / komentar
+        $ws->getComment('E1')->getText()->createTextRun('Inventory Type: stock / non_stock.');
+        $ws->getComment('F1')->getText()->createTextRun('Pilih satuan dari daftar.');
+        $ws->getComment('G1')->getText()->createTextRun('Pilih kategori dari daftar.');
+        $ws->getComment('H1')->getText()->createTextRun('Subcategory mengikuti kategori di kolom G.');
 
         // Pastikan sheet Products aktif saat disave
         $ss->setActiveSheetIndex(0);
@@ -204,15 +214,15 @@ class ProductImportController extends Controller
     // helper tetap sama
     private function col(int $idx): string {
         $s = '';
-        while ($idx > 0) { 
-            $idx--; 
-            $s = chr(65 + ($idx % 26)).$s; 
-            $idx = intdiv($idx, 26); 
+        while ($idx > 0) {
+            $idx--;
+            $s = chr(65 + ($idx % 26)).$s;
+            $idx = intdiv($idx, 26);
         }
         return $s;
     }
 
-    /** ========== 2) Proses import XLSX: parse (prioritas ID), create/upsert, store dari /me, + unit ========== */
+    /** ========== 2) Proses import XLSX: pakai inventory_type (stock / non_stock) ========== */
     public function import(Request $req)
     {
         // supaya variabel ada untuk scope catch luar
@@ -220,8 +230,6 @@ class ProductImportController extends Controller
         $sheet = null;
 
         try {
-            // mode masih boleh "upsert" atau "create-only" biar kompatibel dengan FE,
-            // tapi di bawah TIDAK dipakai untuk update.
             $req->validate([
                 'file' => 'required|file|mimes:xlsx,xls|max:10240',
                 'mode' => 'nullable|string|in:upsert,create-only',
@@ -267,16 +275,17 @@ class ProductImportController extends Controller
                 return $fallback;
             };
 
-            // mapping kolom: A=SKU, B=Name, C=Price, D=Stock, E:Unit, F:Category, G:Subcategory, H:Description
+            // mapping kolom: A=SKU, B=Name, C=Price, D=Stock, E=Inventory Type, F:Unit, G:Category, H:Subcategory, I:Description
             $col = [
-                'sku'         => $findCol('sku', 'A'),
-                'name'        => $findCol('name', 'B'),
-                'price'       => $findCol('price', 'C'),
-                'stock'       => $findCol('stock', 'D'),
-                'unit'        => $findCol('unit', 'E'),
-                'cat_name'    => $findCol('category', 'F'),
-                'sub_name'    => $findCol('subcategory', 'G'),
-                'description' => $findCol('description', 'H'),
+                'sku'            => $findCol('sku', 'A'),
+                'name'           => $findCol('name', 'B'),
+                'price'          => $findCol('price', 'C'),
+                'stock'          => $findCol('stock', 'D'),
+                'inventory_type' => $findCol('inventory_type', 'E'),
+                'unit'           => $findCol('unit', 'F'),
+                'cat_name'       => $findCol('category', 'G'),
+                'sub_name'       => $findCol('subcategory', 'H'),
+                'description'    => $findCol('description', 'I'),
             ];
 
             // cache master
@@ -299,7 +308,7 @@ class ProductImportController extends Controller
             };
 
             $created = 0;
-            $updated = 0; // akan tetap 0, kita tidak lakukan update
+            $updated = 0; // tidak dipakai (create-only)
             $errors  = [];
             $touchedIds = []; // untuk resync stok absolut di akhir
 
@@ -315,6 +324,7 @@ class ProductImportController extends Controller
                         $name   = trim((string)($line[$col['name']] ?? ''));
                         $price  = $num($line[$col['price']] ?? null);
                         $stock  = $num($line[$col['stock']] ?? null);
+                        $invRaw = trim((string)($line[$col['inventory_type']] ?? ''));
                         $unitNm = trim((string)($line[$col['unit']] ?? ''));
                         $catNm  = trim((string)($line[$col['cat_name']] ?? ''));
                         $subNm  = trim((string)($line[$col['sub_name']] ?? ''));
@@ -323,13 +333,27 @@ class ProductImportController extends Controller
                         // baris kosong?
                         if (
                             $sku==='' && $name==='' && $catNm==='' && $subNm==='' &&
-                            $price===null && $stock===null && $desc==='' && $unitNm===''
+                            $price===null && $stock===null && $desc==='' && $unitNm==='' && $invRaw===''
                         ) {
                             continue;
                         }
                         if ($name === '') {
                             $errors[] = ['row' => $r, 'message' => 'Name is required'];
                             continue;
+                        }
+
+                        // Normalisasi inventory_type
+                        $inv = mb_strtolower($invRaw);
+                        $inventoryType = 'stock'; // default
+                        if ($inv !== '') {
+                            if (in_array($inv, ['stock','stok','produk stok','product stock','produk_stock'], true)) {
+                                $inventoryType = 'stock';
+                            } elseif (in_array($inv, ['non_stock','non-stock','non stock','jasa','service','nonstock'], true)) {
+                                $inventoryType = 'non_stock';
+                            } else {
+                                // nilai aneh → fallback ke 'stock'
+                                $inventoryType = 'stock';
+                            }
                         }
 
                         // resolve category/subcategory by name
@@ -408,15 +432,18 @@ class ProductImportController extends Controller
                         if (Schema::hasColumn($p->getTable(), 'unit_id')) {
                             $p->unit_id = $unitId;
                         }
+                        if (Schema::hasColumn($p->getTable(), 'inventory_type')) {
+                            $p->inventory_type = $inventoryType; // stock / non_stock
+                        }
                         // kolom stock diisi 0 karena kita pakai inventory tables
                         if (Schema::hasColumn($p->getTable(), 'stock')) $p->stock = 0;
                         $p->save();
                         $created++;
 
                         // ===============================
-                        // STOK AWAL → INVENTORY + LEDGER
+                        // STOK AWAL → INVENTORY + LEDGER (HANYA UNTUK inventory_type = stock)
                         // ===============================
-                        if ($stock > 0 && Schema::hasTable('inventory_layers')) {
+                        if ($inventoryType === 'stock' && $stock > 0 && Schema::hasTable('inventory_layers')) {
                             // 1) Buat layer & ambil ID layer yang baru
                             $layerId = \App\Support\InventoryQuick::addInboundLayer([
                                 'product_id'        => (int)$p->id,
@@ -424,7 +451,7 @@ class ProductImportController extends Controller
                                 'unit_cost'         => is_numeric($price) ? (float)$price : 0,
                                 'note'              => 'Stok awal (import excel)',
                                 'store_location_id' => $storeId,
-                                'source_type'       => 'IMPORT_OPEN',
+                                'source_type'       => 'ADD_PRODUCT',
                                 'with_ledger'       => false,
                             ]);
 
@@ -537,6 +564,7 @@ class ProductImportController extends Controller
     }
 
     /**
+     * (Masih disimpan kalau nanti mau dipakai)
      * Catat stok awal/penyesuaian ke inventory tables bila tersedia.
      * Menggunakan store_location_id dari user yang mengupload.
      * Unit cost diisi dari price (jika ada) atau 0.
@@ -576,7 +604,6 @@ class ProductImportController extends Controller
                     if ($hasUnitPrice) $data['unit_price'] = $cost;
                     if ($hasUnitCost)  $data['unit_cost']  = $cost;
 
-                    // kolom biaya lain (jika ada) → default aman
                     foreach (['unit_tax','unit_other_cost','unit_landed_cost','estimated_cost','subtotal_cost'] as $k) {
                         if ($has($k) && !array_key_exists($k, $data)) $data[$k] = 0;
                     }
@@ -632,7 +659,7 @@ class ProductImportController extends Controller
                     $data['qty_in']  = $qty;
                     $data['qty_out'] = 0;
                 } elseif ($hasQtyDir) {
-                    $data['qty'] = $qty; 
+                    $data['qty'] = $qty;
                     $data['direction'] = 1;
                 } elseif ($hasQtyOnly) {
                     $data['qty'] = $qty;

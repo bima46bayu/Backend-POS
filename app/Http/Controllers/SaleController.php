@@ -83,8 +83,8 @@ class SaleController extends Controller
                 $qty = (int)($row['qty'] ?? 0);
                 if ($qty < 1) abort(422, 'Qty minimal 1');
 
-                // VALIDASI stok (legacy: pakai products.stock seperti kodenya sekarang)
-                if ($product->stock < $qty) {
+                // ✅ VALIDASI stok hanya untuk produk stock
+                if ($product->isStockTracked() && $product->stock < $qty) {
                     abort(422, "Stok tidak cukup untuk {$product->name} (tersisa {$product->stock})");
                 }
 
@@ -106,18 +106,20 @@ class SaleController extends Controller
                     'line_total'       => $lineTotal,
                 ];
 
-                // legacy: turunkan stock + log
-                $product->decrement('stock', $qty);
+                // ✅ Turunkan stock + log HANYA untuk produk stock
+                if ($product->isStockTracked()) {
+                    $product->decrement('stock', $qty);
 
-                StockLog::create([
-                    'product_id'  => $product->id,
-                    'user_id'     => $user->id,
-                    'change_type' => 'out',
-                    'quantity'    => $qty,
-                    'note'        => 'sale (temp)',
-                    'created_at'  => now(),
-                    'updated_at'  => now(),
-                ]);
+                    StockLog::create([
+                        'product_id'  => $product->id,
+                        'user_id'     => $user->id,
+                        'change_type' => 'out',
+                        'quantity'    => $qty,
+                        'note'        => 'sale (temp)',
+                        'created_at'  => now(),
+                        'updated_at'  => now(),
+                    ]);
+                }
             }
 
             // header amounts
@@ -158,65 +160,69 @@ class SaleController extends Controller
                 'updated_at'        => now(),
             ]);
 
-            // simpan items + konsumsi FIFO + LEDGER OUT per consumption
             /** @var InventoryService $inv */
             $inv = app(InventoryService::class);
 
+            // simpan items + konsumsi FIFO + LEDGER OUT per consumption (HANYA stock)
             foreach ($saleItemsPayload as $payload) {
                 $payload['sale_id'] = $sale->id;
                 $item = SaleItem::create($payload);
 
-                // konsumsi stok (pakai servicemu apa adanya)
-                if (method_exists($inv, 'consumeFIFOWithPricing')) {
-                    $inv->consumeFIFOWithPricing([
-                        'product_id'        => $item->product_id,
-                        'qty'               => (float)$item->qty,
-                        'store_location_id' => $storeId,
-                        'sale_id'           => $sale->id,
-                        'sale_item_id'      => $item->id,
-                        'sale_unit_price'   => (float)$item->net_unit_price,
-                        'user_id'           => $user->id ?? null,
-                    ]);
-                } else {
-                    $inv->consumeStock([
-                        'product_id'        => $item->product_id,
-                        'store_location_id' => $storeId,
-                        'qty'               => (float)$item->qty,
-                        'source_type'       => 'sale',
-                        'source_id'         => $sale->id,
-                        'sale_item_id'      => $item->id,
-                    ]);
-                }
+                $product = $products[$item->product_id] ?? null;
 
-                // ===== LEDGER OUT dari inventory_consumptions (direction = -1, ref_type = 'SALE') =====
-                // Utamakan filter by sale_item_id; fallback ke sale_id + product_id jika kolom sale_item_id tidak ada.
-                $consQuery = DB::table('inventory_consumptions')->where('product_id', $item->product_id);
-                if (Schema::hasColumn('inventory_consumptions', 'sale_item_id')) {
-                    $consQuery->where('sale_item_id', $item->id);
-                } else {
-                    $consQuery->where('sale_id', $sale->id);
-                }
-                $consRows = $consQuery->orderBy('id')->get(['layer_id', 'qty', 'unit_cost']);
+                // ✅ hanya produk stock yang menyentuh inventory & ledger
+                if ($product && $product->isStockTracked()) {
+                    // konsumsi stok (pakai servicemu apa adanya)
+                    if (method_exists($inv, 'consumeFIFOWithPricing')) {
+                        $inv->consumeFIFOWithPricing([
+                            'product_id'        => $item->product_id,
+                            'qty'               => (float)$item->qty,
+                            'store_location_id' => $storeId,
+                            'sale_id'           => $sale->id,
+                            'sale_item_id'      => $item->id,
+                            'sale_unit_price'   => (float)$item->net_unit_price,
+                            'user_id'           => $user->id ?? null,
+                        ]);
+                    } else {
+                        $inv->consumeStock([
+                            'product_id'        => $item->product_id,
+                            'store_location_id' => $storeId,
+                            'qty'               => (float)$item->qty,
+                            'source_type'       => 'sale',
+                            'source_id'         => $sale->id,
+                            'sale_item_id'      => $item->id,
+                        ]);
+                    }
 
-                foreach ($consRows as $c) {
-                    DB::table('stock_ledger')->insert([
-                        'product_id'        => $item->product_id,
-                        'store_location_id' => $storeId,
-                        'layer_id'          => $c->layer_id,
-                        'user_id'           => $user->id ?? null,
-                        'ref_type'          => 'SALE',         // UPPERCASE agar match InventoryController
-                        'ref_id'            => $sale->id,
-                        'direction'         => -1,             // OUT = -1
-                        'qty'               => (float)$c->qty,
-                        'unit_cost'         => (float)$c->unit_cost,        // cost dari layer
-                        'unit_price'        => (float)$item->net_unit_price, // optional untuk analisa margin
-                        'subtotal_cost'     => (float)$c->qty * (float)$c->unit_cost,
-                        'note'              => "sale #{$sale->code}",
-                        'created_at'        => now(),
-                        'updated_at'        => now(),
-                    ]);
+                    // ===== LEDGER OUT dari inventory_consumptions (direction = -1, ref_type = 'SALE') =====
+                    $consQuery = DB::table('inventory_consumptions')->where('product_id', $item->product_id);
+                    if (Schema::hasColumn('inventory_consumptions', 'sale_item_id')) {
+                        $consQuery->where('sale_item_id', $item->id);
+                    } else {
+                        $consQuery->where('sale_id', $sale->id);
+                    }
+                    $consRows = $consQuery->orderBy('id')->get(['layer_id', 'qty', 'unit_cost']);
+
+                    foreach ($consRows as $c) {
+                        DB::table('stock_ledger')->insert([
+                            'product_id'        => $item->product_id,
+                            'store_location_id' => $storeId,
+                            'layer_id'          => $c->layer_id,
+                            'user_id'           => $user->id ?? null,
+                            'ref_type'          => 'SALE',         // UPPERCASE agar match InventoryController
+                            'ref_id'            => $sale->id,
+                            'direction'         => -1,             // OUT = -1
+                            'qty'               => (float)$c->qty,
+                            'unit_cost'         => (float)$c->unit_cost,        // cost dari layer
+                            'unit_price'        => (float)$item->net_unit_price, // optional untuk analisa margin
+                            'subtotal_cost'     => (float)$c->qty * (float)$c->unit_cost,
+                            'note'              => "sale #{$sale->code}",
+                            'created_at'        => now(),
+                            'updated_at'        => now(),
+                        ]);
+                    }
+                    // ===== END LEDGER OUT =====
                 }
-                // ===== END LEDGER OUT =====
             }
 
             // simpan payments
@@ -231,7 +237,7 @@ class SaleController extends Controller
                 ]);
             }
 
-            // update catatan StockLog sementara
+            // update catatan StockLog sementara → hanya menyentuh product_ids yang tadi di-loop
             StockLog::where('note', 'sale (temp)')
                 ->whereIn('product_id', $productIds)
                 ->where('user_id', $user->id)
@@ -240,7 +246,6 @@ class SaleController extends Controller
                 ->update(['note' => "sale #{$sale->code}"]);
 
             return response()->json(
-                // tambahkan storeLocation di response create
                 $sale->load(['items.product', 'payments', 'cashier', 'storeLocation']),
                 201
             );
@@ -333,19 +338,23 @@ class SaleController extends Controller
                 ->whereNull('reversed_at')
                 ->update(['reversed_at' => now(), 'updated_at' => now()]);
 
-            // 5) Kembalikan counter stok produk (legacy) + log
+            // 5) Kembalikan counter stok produk (legacy) + log HANYA untuk produk stock
             foreach ($sale->items as $item) {
-                $item->product->increment('stock', $item->qty);
+                $product = $item->product;
 
-                StockLog::create([
-                    'product_id'  => $item->product_id,
-                    'user_id'     => auth()->id(),
-                    'change_type' => 'in',
-                    'quantity'    => $item->qty,
-                    'note'        => "void sale #{$sale->code}",
-                    'created_at'  => now(),
-                    'updated_at'  => now(),
-                ]);
+                if ($product && $product->isStockTracked()) {
+                    $product->increment('stock', $item->qty);
+
+                    StockLog::create([
+                        'product_id'  => $item->product_id,
+                        'user_id'     => auth()->id(),
+                        'change_type' => 'in',
+                        'quantity'    => $item->qty,
+                        'note'        => "void sale #{$sale->code}",
+                        'created_at'  => now(),
+                        'updated_at'  => now(),
+                    ]);
+                }
             }
 
             // 6) Status sale

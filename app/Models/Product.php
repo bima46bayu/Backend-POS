@@ -14,6 +14,8 @@ use Illuminate\Support\Facades\File;
 class Product extends Model
 {
     use HasFactory, SoftDeletes;
+    const INVENTORY_TYPE_STOCK     = 'stock';
+    const INVENTORY_TYPE_NON_STOCK = 'non_stock';
 
     protected $fillable = [
         'category_id',
@@ -120,5 +122,10 @@ class Product extends Model
                 }
             });
         });
+    }
+
+    public function isStockTracked(): bool
+    {
+        return $this->inventory_type === self::INVENTORY_TYPE_STOCK;
     }
 }

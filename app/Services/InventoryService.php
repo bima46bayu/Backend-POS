@@ -4,6 +4,7 @@ namespace App\Services;
 
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
+use App\Models\Product;
 
 class InventoryService
 {
@@ -12,8 +13,21 @@ class InventoryService
      */
     public function addInboundLayer(array $p): void
     {
-        $productId = (int)$p['product_id'];
-        $qty       = (float)$p['qty'];
+        $productId = (int) $p['product_id'];
+
+        // ➕ Tambahan: cek product & inventory_type
+        $product = Product::find($productId);
+        if (!$product) {
+            // optional: bisa throw / silent skip. Untuk sekarang kita skip saja.
+            return;
+        }
+
+        // NON-STOCK → jangan buat layer sama sekali
+        if (! $product->isStockTracked()) {
+            return;
+        }
+
+        $qty = (float) $p['qty'];
         if ($qty <= 0) return;
 
         $unitBuy   = (float)($p['unit_buy'] ?? 0);
@@ -52,8 +66,19 @@ class InventoryService
         $saleUnit   = (float)$p['sale_unit_price'];
         $eps        = 1e-9;
 
-        if ($need <= 0) return [];
+        // ❗ Tambahan: cek product dan tipe inventory
+        $product = Product::find($productId);
+        if (!$product) {
+            // optional: mau throw atau skip, di sini aku choose skip
+            return [];
+        }
 
+        // NON-STOCK → jangan konsumsi layer sama sekali
+        if (! $product->isStockTracked() || $need <= 0) {
+            return [];
+        }
+
+        // MULAI: logika lama untuk produk stock
         // helper: ambil layer tertua yg masih ada qty
         $nextLayer = function (bool $withStore) use ($productId, $storeId) {
             $q = DB::table('inventory_layers')
