@@ -30,6 +30,7 @@ class Product extends Model
         'created_by',
         'unit_id',     // ← penting untuk relasi unit
         'unit_name',   // kalau kamu pakai kolom ini di DB
+        'inventory_type',
     ];
 
     // ===== Relasi =====
