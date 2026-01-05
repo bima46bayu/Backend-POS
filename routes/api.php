@@ -19,6 +19,8 @@ use App\Http\Controllers\ProductImportController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\StockReconciliationController;
 use App\Http\Controllers\UnitController;
+use App\Http\Controllers\DiscountController;
+use App\Http\Controllers\PosCheckoutController;
 
 
 Route::options('{any}', function () {
@@ -94,6 +96,12 @@ Route::middleware('auth:sanctum')->group(function () {
     });
     // routes/api.php
     Route::get('/reports/sales-items', [ReportController::class, 'salesItems']);
+
+    Route::get('/discounts', [DiscountController::class, 'index']);
+    Route::post('/pos/checkout', [PosCheckoutController::class, 'checkout']);
+    Route::get('/discounts', [DiscountController::class, 'index']);      // list (admin + dropdown)
+    Route::get('/discounts/{discount}', [DiscountController::class, 'show']); // detail
+
 
 
     // ---------- STAFF (admin + kasir) ----------
@@ -209,5 +217,10 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::put('/units/{unit}', [UnitController::class, 'update']);
             Route::delete('/units/{unit}', [UnitController::class, 'destroy']);
         });
+
+        Route::post('/discounts', [DiscountController::class, 'store']);     // create
+        Route::put('/discounts/{discount}', [DiscountController::class, 'update']); // update
+        Route::delete('/discounts/{discount}', [DiscountController::class, 'destroy']); // delete
+        Route::patch('/discounts/{discount}/toggle', [DiscountController::class, 'toggle']); // aktif/nonaktif
     });
 });

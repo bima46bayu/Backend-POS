@@ -12,6 +12,7 @@ use App\Models\SaleItem;
 use App\Models\SalePayment;
 use App\Models\Product;
 use App\Models\StockLog;
+use App\Models\Discount;
 use Illuminate\Support\Facades\Schema;
 
 use App\Services\InventoryService;
@@ -61,52 +62,119 @@ class SaleController extends Controller
     {
         $user = Auth::user();
 
-        // pastikan store
+        // ===== store =====
         $storeId = $request->input('store_location_id') ?? optional($user)->store_location_id;
-        if (!$storeId) abort(422, 'store_location_id wajib (atau set store aktif pada user).');
+        if (!$storeId) {
+            abort(422, 'store_location_id wajib.');
+        }
 
         return DB::transaction(function () use ($request, $user, $storeId) {
+
             $itemsInput = $request->items ?? [];
-            if (empty($itemsInput)) abort(422, 'Items tidak boleh kosong');
+            if (empty($itemsInput)) {
+                abort(422, 'Items tidak boleh kosong');
+            }
 
-            // lock produk
+            /* =====================================================
+            * LOCK PRODUCTS
+            * ===================================================== */
             $productIds = collect($itemsInput)->pluck('product_id')->all();
-            $products   = Product::whereIn('id', $productIds)->lockForUpdate()->get()->keyBy('id');
+            $products = Product::whereIn('id', $productIds)
+                ->lockForUpdate()
+                ->get()
+                ->keyBy('id');
 
+            /* =====================================================
+            * PRELOAD DISCOUNTS (ITEM + GLOBAL)
+            * ===================================================== */
+            $needIds = [];
+
+            // 🔥 GLOBAL DISCOUNT ID (FIX)
+            if ($request->filled('global_discount_id')) {
+                $needIds[] = (int)$request->global_discount_id;
+            }
+
+            // ITEM DISCOUNT ID
+            foreach ($itemsInput as $it) {
+                if (!empty($it['discount_id'])) {
+                    $needIds[] = (int)$it['discount_id'];
+                }
+            }
+
+            $discountMap = Discount::whereIn('id', array_unique($needIds))
+                ->where('active', 1)
+                ->get()
+                ->keyBy('id');
+
+            /* =====================================================
+            * HITUNG ITEMS
+            * ===================================================== */
             $subtotal = 0.0;
             $saleItemsPayload = [];
 
             foreach ($itemsInput as $row) {
                 $product = $products[$row['product_id']] ?? null;
-                if (!$product) abort(422, "Product {$row['product_id']} not found.");
+                if (!$product) {
+                    abort(422, "Product {$row['product_id']} tidak ditemukan");
+                }
 
                 $qty = (int)($row['qty'] ?? 0);
-                if ($qty < 1) abort(422, 'Qty minimal 1');
+                if ($qty < 1) {
+                    abort(422, 'Qty minimal 1');
+                }
 
-                // ✅ VALIDASI stok hanya untuk produk stock
                 if ($product->isStockTracked() && $product->stock < $qty) {
-                    abort(422, "Stok tidak cukup untuk {$product->name} (tersisa {$product->stock})");
+                    abort(422, "Stok {$product->name} tidak cukup (tersisa {$product->stock})");
                 }
 
                 $unitPrice = (float)($row['unit_price'] ?? $product->price);
-                $discUnit  = round((float)($row['discount_nominal'] ?? 0), 2);
-                $discUnit  = max(0, min($discUnit, $unitPrice));
+                $lineBase  = $unitPrice * $qty;
 
-                $netUnit   = round($unitPrice - $discUnit, 2);
-                $lineTotal = round($netUnit * $qty, 2);
+                /* ---------- ITEM DISCOUNT ---------- */
+                $discNominal = 0.0;
+                $disc = null;
 
-                $subtotal += $lineTotal;
+                if (!empty($row['discount_id'])) {
+                    $disc = $discountMap[(int)$row['discount_id']] ?? null;
+
+                    if ($disc && $disc->scope !== 'ITEM') {
+                        abort(422, "Discount item tidak valid (scope bukan ITEM)");
+                    }
+
+                    if ($disc) {
+                        if ($disc->min_subtotal !== null && $lineBase < (float)$disc->min_subtotal) {
+                            abort(422, "Diskon item '{$disc->name}' belum memenuhi minimal pembelian");
+                        }
+
+                        if ($disc->kind === 'PERCENT') {
+                            $discNominal = $lineBase * ((float)$disc->value / 100);
+                            if ($disc->max_amount !== null) {
+                                $discNominal = min($discNominal, (float)$disc->max_amount);
+                            }
+                        } else {
+                            $discNominal = (float)$disc->value;
+                        }
+                    }
+                }
+
+                $discNominal = max(0.0, min($discNominal, $lineBase));
+
+                $netLine = $lineBase - $discNominal;
+                $netUnit = $netLine / $qty;
+
+                $subtotal += $netLine;
 
                 $saleItemsPayload[] = [
                     'product_id'       => $product->id,
-                    'unit_price'       => $unitPrice,
-                    'discount_nominal' => $discUnit,
-                    'net_unit_price'   => $netUnit,
+                    'unit_price'       => round($unitPrice, 2),
                     'qty'              => $qty,
-                    'line_total'       => $lineTotal,
+
+                    'discount_id'      => $disc?->id,
+                    'discount_nominal' => round($discNominal, 2),
+                    'net_unit_price'   => round($netUnit, 2),
+                    'line_total'       => round($netLine, 2),
                 ];
 
-                // ✅ Turunkan stock + log HANYA untuk produk stock
                 if ($product->isStockTracked()) {
                     $product->decrement('stock', $qty);
 
@@ -116,72 +184,123 @@ class SaleController extends Controller
                         'change_type' => 'out',
                         'quantity'    => $qty,
                         'note'        => 'sale (temp)',
-                        'created_at'  => now(),
-                        'updated_at'  => now(),
                     ]);
                 }
             }
 
-            // header amounts
-            $extraDiscount = max(0, min(round((float)($request->discount ?? 0), 2), $subtotal));
+            /* =====================================================
+            * GLOBAL DISCOUNT (🔥 FIX UTAMA)
+            * ===================================================== */
+            $globalDiscount = 0.0;
+            $global = null;
+
+            $globalDiscountId = $request->input('global_discount_id');
+
+            if ($globalDiscountId) {
+                $global = $discountMap[(int)$globalDiscountId] ?? null;
+
+                if ($global && $global->scope !== 'GLOBAL') {
+                    abort(422, "Discount global tidak valid (scope bukan GLOBAL)");
+                }
+
+                if ($global) {
+                    if ($global->min_subtotal !== null && $subtotal < (float)$global->min_subtotal) {
+                        abort(422, "Diskon '{$global->name}' belum memenuhi minimal belanja");
+                    }
+
+                    if ($global->kind === 'PERCENT') {
+                        $globalDiscount = $subtotal * ((float)$global->value / 100);
+                        if ($global->max_amount !== null) {
+                            $globalDiscount = min($globalDiscount, (float)$global->max_amount);
+                        }
+                    } else {
+                        $globalDiscount = (float)$global->value;
+                    }
+                }
+            }
+
+            $globalDiscount = max(0.0, min($globalDiscount, $subtotal));
+
+            /* =====================================================
+            * TOTAL
+            * ===================================================== */
             $serviceCharge = round((float)($request->service_charge ?? 0), 2);
-            $taxPercent    = $request->filled('tax_percent') ? (float)$request->tax_percent : null;
-            $taxBase       = max(0, $subtotal - $extraDiscount + $serviceCharge);
-            $tax           = $taxPercent !== null ? round($taxBase * ($taxPercent / 100), 2) : round((float)($request->tax ?? 0), 2);
-            $total         = round($taxBase + $tax, 2);
+            $tax = round((float)($request->tax ?? 0), 2);
 
-            // payments
+            $total = round(max(0.0, $subtotal - $globalDiscount + $serviceCharge + $tax), 2);
+
+            /* =====================================================
+            * PAYMENTS
+            * ===================================================== */
             $payments = $request->payments ?? [];
-            if (!is_array($payments) || empty($payments)) abort(422, 'Payments tidak boleh kosong');
+            if (empty($payments)) {
+                abort(422, 'Payments tidak boleh kosong');
+            }
 
-            $paid = round(array_reduce($payments, fn($c, $p) => $c + (float)($p['amount'] ?? 0), 0.0), 2);
-            $change = round(max(0, $paid - $total), 2);
-            if ($paid < $total) abort(422, "Pembayaran kurang Rp " . number_format($total - $paid, 0, ',', '.'));
+            $paid = round(array_reduce(
+                $payments,
+                fn($s, $p) => $s + (float)($p['amount'] ?? 0),
+                0.0
+            ), 2);
 
-            // generate code
-            $seq  = Sale::whereDate('created_at', now())->lockForUpdate()->count() + 1;
-            $code = 'POS-' . now()->format('Ymd') . '-' . str_pad((string)$seq, 4, '0', STR_PAD_LEFT);
+            if ($paid < $total) {
+                abort(422, "Pembayaran kurang Rp " . number_format($total - $paid, 0, ',', '.'));
+            }
 
-            // simpan sale
+            $change = round(max(0.0, $paid - $total), 2);
+
+            /* =====================================================
+            * SAVE SALE
+            * ===================================================== */
+            $seq = Sale::whereDate('created_at', now())
+                ->lockForUpdate()
+                ->count() + 1;
+
+            $code = 'POS-' . now()->format('Ymd') . '-' . str_pad($seq, 4, '0', STR_PAD_LEFT);
+
             $sale = Sale::create([
                 'code'              => $code,
                 'cashier_id'        => $user->id,
                 'store_location_id' => $storeId,
-                'customer_name'     => $request->customer_name,
+                'customer_name'     => $request->customer_name ?? 'General',
+
                 'subtotal'          => $subtotal,
-                'discount'          => $extraDiscount,
+                'discount'          => $globalDiscount,
                 'service_charge'    => $serviceCharge,
                 'tax'               => $tax,
                 'total'             => $total,
                 'paid'              => $paid,
                 'change'            => $change,
                 'status'            => 'completed',
-                'created_at'        => now(),
-                'updated_at'        => now(),
+
+                // snapshot diskon global
+                'discount_id'       => $global?->id,
+                'discount_name'     => $global?->name,
+                'discount_kind'     => $global?->kind,
+                'discount_value'    => $global?->value,
             ]);
 
-            /** @var InventoryService $inv */
+            /* =====================================================
+            * SAVE ITEMS + INVENTORY FIFO
+            * ===================================================== */
             $inv = app(InventoryService::class);
 
-            // simpan items + konsumsi FIFO + LEDGER OUT per consumption (HANYA stock)
             foreach ($saleItemsPayload as $payload) {
                 $payload['sale_id'] = $sale->id;
                 $item = SaleItem::create($payload);
 
                 $product = $products[$item->product_id] ?? null;
 
-                // ✅ hanya produk stock yang menyentuh inventory & ledger
                 if ($product && $product->isStockTracked()) {
-                    // konsumsi stok (pakai servicemu apa adanya)
                     if (method_exists($inv, 'consumeFIFOWithPricing')) {
                         $inv->consumeFIFOWithPricing([
                             'product_id'        => $item->product_id,
-                            'qty'               => (float)$item->qty,
                             'store_location_id' => $storeId,
+                            'qty'               => (float)$item->qty,
                             'sale_id'           => $sale->id,
                             'sale_item_id'      => $item->id,
                             'sale_unit_price'   => (float)$item->net_unit_price,
-                            'user_id'           => $user->id ?? null,
+                            'user_id'           => $user->id,
                         ]);
                     } else {
                         $inv->consumeStock([
@@ -193,56 +312,20 @@ class SaleController extends Controller
                             'sale_item_id'      => $item->id,
                         ]);
                     }
-
-                    // ===== LEDGER OUT dari inventory_consumptions (direction = -1, ref_type = 'SALE') =====
-                    $consQuery = DB::table('inventory_consumptions')->where('product_id', $item->product_id);
-                    if (Schema::hasColumn('inventory_consumptions', 'sale_item_id')) {
-                        $consQuery->where('sale_item_id', $item->id);
-                    } else {
-                        $consQuery->where('sale_id', $sale->id);
-                    }
-                    $consRows = $consQuery->orderBy('id')->get(['layer_id', 'qty', 'unit_cost']);
-
-                    foreach ($consRows as $c) {
-                        DB::table('stock_ledger')->insert([
-                            'product_id'        => $item->product_id,
-                            'store_location_id' => $storeId,
-                            'layer_id'          => $c->layer_id,
-                            'user_id'           => $user->id ?? null,
-                            'ref_type'          => 'SALE',         // UPPERCASE agar match InventoryController
-                            'ref_id'            => $sale->id,
-                            'direction'         => -1,             // OUT = -1
-                            'qty'               => (float)$c->qty,
-                            'unit_cost'         => (float)$c->unit_cost,        // cost dari layer
-                            'unit_price'        => (float)$item->net_unit_price, // optional untuk analisa margin
-                            'subtotal_cost'     => (float)$c->qty * (float)$c->unit_cost,
-                            'note'              => "sale #{$sale->code}",
-                            'created_at'        => now(),
-                            'updated_at'        => now(),
-                        ]);
-                    }
-                    // ===== END LEDGER OUT =====
                 }
             }
 
-            // simpan payments
             foreach ($payments as $p) {
                 SalePayment::create([
                     'sale_id'   => $sale->id,
                     'method'    => strtoupper($p['method']) === 'QRIS' ? 'QRIS' : $p['method'],
                     'amount'    => $p['amount'],
                     'reference' => $p['reference'] ?? null,
-                    'created_at'=> now(),
-                    'updated_at'=> now(),
                 ]);
             }
 
-            // update catatan StockLog sementara → hanya menyentuh product_ids yang tadi di-loop
             StockLog::where('note', 'sale (temp)')
-                ->whereIn('product_id', $productIds)
                 ->where('user_id', $user->id)
-                ->latest()
-                ->take(count($saleItemsPayload))
                 ->update(['note' => "sale #{$sale->code}"]);
 
             return response()->json(

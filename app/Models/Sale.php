@@ -8,6 +8,7 @@ use App\Models\SaleItem;
 use App\Models\SalePayment;
 use App\Models\User;
 use App\Models\StoreLocation;
+use App\Models\Discount;
 
 class Sale extends Model
 {
@@ -26,6 +27,10 @@ class Sale extends Model
         'paid',
         'change',
         'status',
+        'discount_id',
+        'discount_name',
+        'discount_kind',
+        'discount_value',
     ];
 
     protected $casts = [
@@ -57,4 +62,10 @@ class Sale extends Model
     {
         return $this->belongsTo(StoreLocation::class, 'store_location_id');
     }
+
+    public function discountMaster()
+    {
+        return $this->belongsTo(Discount::class, 'discount_id');
+    }
+
 }
