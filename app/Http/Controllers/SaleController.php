@@ -13,6 +13,8 @@ use App\Models\SalePayment;
 use App\Models\Product;
 use App\Models\StockLog;
 use App\Models\Discount;
+use App\Models\AdditionalCharge;
+
 use Illuminate\Support\Facades\Schema;
 
 use App\Services\InventoryService;
@@ -89,12 +91,10 @@ class SaleController extends Controller
             * ===================================================== */
             $needIds = [];
 
-            // 🔥 GLOBAL DISCOUNT ID (FIX)
             if ($request->filled('global_discount_id')) {
                 $needIds[] = (int)$request->global_discount_id;
             }
 
-            // ITEM DISCOUNT ID
             foreach ($itemsInput as $it) {
                 if (!empty($it['discount_id'])) {
                     $needIds[] = (int)$it['discount_id'];
@@ -107,21 +107,17 @@ class SaleController extends Controller
                 ->keyBy('id');
 
             /* =====================================================
-            * HITUNG ITEMS
+            * HITUNG ITEMS (ITEM DISCOUNT)
             * ===================================================== */
             $subtotal = 0.0;
             $saleItemsPayload = [];
 
             foreach ($itemsInput as $row) {
                 $product = $products[$row['product_id']] ?? null;
-                if (!$product) {
-                    abort(422, "Product {$row['product_id']} tidak ditemukan");
-                }
+                if (!$product) abort(422, "Product {$row['product_id']} tidak ditemukan");
 
                 $qty = (int)($row['qty'] ?? 0);
-                if ($qty < 1) {
-                    abort(422, 'Qty minimal 1');
-                }
+                if ($qty < 1) abort(422, 'Qty minimal 1');
 
                 if ($product->isStockTracked() && $product->stock < $qty) {
                     abort(422, "Stok {$product->name} tidak cukup (tersisa {$product->stock})");
@@ -130,7 +126,7 @@ class SaleController extends Controller
                 $unitPrice = (float)($row['unit_price'] ?? $product->price);
                 $lineBase  = $unitPrice * $qty;
 
-                /* ---------- ITEM DISCOUNT ---------- */
+                // ---------- ITEM DISCOUNT ----------
                 $discNominal = 0.0;
                 $disc = null;
 
@@ -169,8 +165,13 @@ class SaleController extends Controller
                     'unit_price'       => round($unitPrice, 2),
                     'qty'              => $qty,
 
+                    // 🔥 SNAPSHOT DISKON ITEM
                     'discount_id'      => $disc?->id,
+                    'discount_name'    => $disc?->name,
+                    'discount_kind'    => $disc?->kind,
+                    'discount_value'   => $disc?->value,
                     'discount_nominal' => round($discNominal, 2),
+
                     'net_unit_price'   => round($netUnit, 2),
                     'line_total'       => round($netLine, 2),
                 ];
@@ -189,18 +190,16 @@ class SaleController extends Controller
             }
 
             /* =====================================================
-            * GLOBAL DISCOUNT (🔥 FIX UTAMA)
+            * GLOBAL DISCOUNT
             * ===================================================== */
             $globalDiscount = 0.0;
             $global = null;
 
-            $globalDiscountId = $request->input('global_discount_id');
-
-            if ($globalDiscountId) {
-                $global = $discountMap[(int)$globalDiscountId] ?? null;
+            if ($request->filled('global_discount_id')) {
+                $global = $discountMap[(int)$request->global_discount_id] ?? null;
 
                 if ($global && $global->scope !== 'GLOBAL') {
-                    abort(422, "Discount global tidak valid (scope bukan GLOBAL)");
+                    abort(422, "Discount global tidak valid");
                 }
 
                 if ($global) {
@@ -222,24 +221,54 @@ class SaleController extends Controller
             $globalDiscount = max(0.0, min($globalDiscount, $subtotal));
 
             /* =====================================================
-            * TOTAL
+            * GRAND TOTAL (SETELAH DISKON)
             * ===================================================== */
-            $serviceCharge = round((float)($request->service_charge ?? 0), 2);
-            $tax = round((float)($request->tax ?? 0), 2);
+            $grandTotal = round($subtotal - $globalDiscount, 2);
 
-            $total = round(max(0.0, $subtotal - $globalDiscount + $serviceCharge + $tax), 2);
+            /* =====================================================
+            * ADDITIONAL CHARGES (PB1 & SERVICE)
+            * 🔥 INI BAGIAN BARU
+            * ===================================================== */
+            $additionalCharges = AdditionalCharge::where('store_location_id', $storeId)
+                ->where('is_active', true)
+                ->get();
+
+            $additionalSnapshot = [];
+            $additionalTotal = 0.0;
+
+            foreach ($additionalCharges as $c) {
+                if ($c->calc_type === 'PERCENT') {
+                    $amount = $grandTotal * ($c->value / 100);
+                } else {
+                    $amount = $c->value;
+                }
+
+                $amount = round($amount, 2);
+                $additionalTotal += $amount;
+
+                $additionalSnapshot[] = [
+                    'type'      => $c->type,          // PB1 / SERVICE
+                    'calc_type' => $c->calc_type,     // PERCENT / FIXED
+                    'value'     => (float)$c->value,
+                    'base'      => $grandTotal,       // 🔥 penting
+                    'amount'    => $amount,
+                ];
+            }
+
+            /* =====================================================
+            * TOTAL FINAL
+            * ===================================================== */
+            $total = round($grandTotal + $additionalTotal, 2);
 
             /* =====================================================
             * PAYMENTS
             * ===================================================== */
             $payments = $request->payments ?? [];
-            if (empty($payments)) {
-                abort(422, 'Payments tidak boleh kosong');
-            }
+            if (empty($payments)) abort(422, 'Payments tidak boleh kosong');
 
             $paid = round(array_reduce(
                 $payments,
-                fn($s, $p) => $s + (float)($p['amount'] ?? 0),
+                fn ($s, $p) => $s + (float)($p['amount'] ?? 0),
                 0.0
             ), 2);
 
@@ -265,23 +294,30 @@ class SaleController extends Controller
                 'customer_name'     => $request->customer_name ?? 'General',
 
                 'subtotal'          => $subtotal,
-                'discount'          => $globalDiscount,
-                'service_charge'    => $serviceCharge,
-                'tax'               => $tax,
-                'total'             => $total,
-                'paid'              => $paid,
-                'change'            => $change,
-                'status'            => 'completed',
 
-                // snapshot diskon global
+                // snapshot global discount
                 'discount_id'       => $global?->id,
                 'discount_name'     => $global?->name,
                 'discount_kind'     => $global?->kind,
                 'discount_value'    => $global?->value,
+                'discount'          => $globalDiscount,
+
+                // 🔥 core baru
+                'grand_total'       => $grandTotal,
+                'additional_charges_snapshot' => $additionalSnapshot,
+                'additional_charge_total'     => $additionalTotal,
+                'final_total'       => $total,
+
+                // legacy (biarkan sinkron)
+                'total'             => $total,
+
+                'paid'              => $paid,
+                'change'            => $change,
+                'status'            => 'completed',
             ]);
 
             /* =====================================================
-            * SAVE ITEMS + INVENTORY FIFO
+            * SAVE ITEMS + FIFO + STOCK LEDGER (CARA KEMARIN)
             * ===================================================== */
             $inv = app(InventoryService::class);
 
@@ -292,24 +328,54 @@ class SaleController extends Controller
                 $product = $products[$item->product_id] ?? null;
 
                 if ($product && $product->isStockTracked()) {
-                    if (method_exists($inv, 'consumeFIFOWithPricing')) {
-                        $inv->consumeFIFOWithPricing([
-                            'product_id'        => $item->product_id,
-                            'store_location_id' => $storeId,
-                            'qty'               => (float)$item->qty,
-                            'sale_id'           => $sale->id,
-                            'sale_item_id'      => $item->id,
-                            'sale_unit_price'   => (float)$item->net_unit_price,
-                            'user_id'           => $user->id,
-                        ]);
+
+                    // 1️⃣ FIFO (tetap seperti sebelumnya)
+                    $inv->consumeFIFOWithPricing([
+                        'product_id'        => $item->product_id,
+                        'store_location_id' => $storeId,
+                        'qty'               => (float)$item->qty,
+                        'sale_id'           => $sale->id,
+                        'sale_item_id'      => $item->id,
+                        'sale_unit_price'   => (float)$item->net_unit_price,
+                        'user_id'           => $user->id,
+                    ]);
+
+                    // 2️⃣ AMBIL INVENTORY CONSUMPTIONS (SUMBER LEDGER)
+                    $consQuery = DB::table('inventory_consumptions')
+                        ->where('product_id', $item->product_id);
+
+                    if (Schema::hasColumn('inventory_consumptions', 'sale_item_id')) {
+                        $consQuery->where('sale_item_id', $item->id);
                     } else {
-                        $inv->consumeStock([
+                        $consQuery->where('sale_id', $sale->id);
+                    }
+
+                    $consRows = $consQuery
+                        ->orderBy('id')
+                        ->get(['layer_id', 'qty', 'unit_cost']);
+
+                    // 3️⃣ TULIS STOCK LEDGER (OUT)
+                    foreach ($consRows as $c) {
+                        DB::table('stock_ledger')->insert([
                             'product_id'        => $item->product_id,
                             'store_location_id' => $storeId,
-                            'qty'               => (float)$item->qty,
-                            'source_type'       => 'sale',
-                            'source_id'         => $sale->id,
-                            'sale_item_id'      => $item->id,
+                            'layer_id'          => $c->layer_id,
+                            'user_id'           => $user->id ?? null,
+
+                            'ref_type'          => 'SALE',
+                            'ref_id'            => $sale->id,
+
+                            'direction'         => -1, // OUT
+                            'qty'               => (float)$c->qty,
+                            'unit_cost'         => (float)$c->unit_cost,
+
+                            // opsional tapi DIPAKAI KEMARIN
+                            'unit_price'        => (float)$item->net_unit_price,
+                            'subtotal_cost'     => (float)$c->qty * (float)$c->unit_cost,
+
+                            'note'              => "sale #{$sale->code}",
+                            'created_at'        => now(),
+                            'updated_at'        => now(),
                         ]);
                     }
                 }

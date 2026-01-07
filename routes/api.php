@@ -21,6 +21,7 @@ use App\Http\Controllers\StockReconciliationController;
 use App\Http\Controllers\UnitController;
 use App\Http\Controllers\DiscountController;
 use App\Http\Controllers\PosCheckoutController;
+use App\Http\Controllers\AdditionalChargeController;
 
 
 Route::options('{any}', function () {
@@ -102,7 +103,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/discounts', [DiscountController::class, 'index']);      // list (admin + dropdown)
     Route::get('/discounts/{discount}', [DiscountController::class, 'show']); // detail
 
-
+    Route::get('/additional-charges', [AdditionalChargeController::class, 'index']);
+    Route::post('/additional-charges', [AdditionalChargeController::class, 'store']);
+    Route::get('/additional-charges/{additionalCharge}', [AdditionalChargeController::class, 'show']);
+    Route::put('/additional-charges/{additionalCharge}', [AdditionalChargeController::class, 'update']);
+    Route::delete('/additional-charges/{additionalCharge}', [AdditionalChargeController::class, 'destroy']);
 
     // ---------- STAFF (admin + kasir) ----------
     Route::middleware('role:admin,kasir')->group(function () {

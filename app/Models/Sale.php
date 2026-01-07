@@ -4,11 +4,6 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use App\Models\SaleItem;
-use App\Models\SalePayment;
-use App\Models\User;
-use App\Models\StoreLocation;
-use App\Models\Discount;
 
 class Sale extends Model
 {
@@ -17,16 +12,30 @@ class Sale extends Model
     protected $fillable = [
         'code',
         'cashier_id',
-        'store_location_id',   // ✅ TAMBAH INI
+        'store_location_id',
         'customer_name',
+
+        // core numbers
         'subtotal',
         'discount',
+
+        // 🔥 NEW CORE
+        'grand_total',
+        'additional_charges_snapshot',
+        'additional_charge_total',
+        'final_total',
+
+        // legacy (jangan dipakai di logic baru)
         'service_charge',
         'tax',
         'total',
+
+        // payment
         'paid',
         'change',
         'status',
+
+        // discount snapshot
         'discount_id',
         'discount_name',
         'discount_kind',
@@ -34,14 +43,24 @@ class Sale extends Model
     ];
 
     protected $casts = [
-        'subtotal'       => 'float',
-        'discount'       => 'float',
-        'service_charge' => 'float',
-        'tax'            => 'float',
-        'total'          => 'float',
-        'paid'           => 'float',
-        'change'         => 'float',
+        'subtotal'                     => 'float',
+        'discount'                     => 'float',
+        'grand_total'                  => 'float',
+        'additional_charge_total'      => 'float',
+        'final_total'                  => 'float',
+
+        // legacy
+        'service_charge'               => 'float',
+        'tax'                          => 'float',
+        'total'                        => 'float',
+
+        'paid'                         => 'float',
+        'change'                       => 'float',
+
+        'additional_charges_snapshot'  => 'array',
     ];
+
+    /* ================= RELATIONS ================= */
 
     public function items()
     {
@@ -67,5 +86,4 @@ class Sale extends Model
     {
         return $this->belongsTo(Discount::class, 'discount_id');
     }
-
 }
