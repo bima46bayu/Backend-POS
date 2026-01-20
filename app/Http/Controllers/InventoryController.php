@@ -341,247 +341,169 @@ class InventoryController extends Controller
 
     // ==== HELPER: logic summary per produk (tanpa response) ====
     private function buildProductSummaryArray(int $productId, Request $r): array
-    {
-        // Ambil product dulu, supaya bisa bedain stock vs non-stock
-        $product = Product::find($productId);
+{
+    $product = Product::find($productId);
 
-        if (!$product) {
-            return [
-                'product_id'          => (int)$productId,
-                'qty_in'              => 0,
-                'qty_out'             => 0,
-                'gross_revenue'       => 0,
-                'cogs'                => 0,
-                'gross_profit'        => 0,
-                'avg_sale_price'      => null,
-                'avg_cost'            => null,
-                'gross_revenue_total' => 0,
-                'cogs_total'          => 0,
-                'gross_profit_total'  => 0,
-                'avg_sale_price_total'=> null,
-                'avg_cost_total'      => null,
-                'ending_stock'        => 0,
-                'opening_qty'         => 0,
-                'opening_cost'        => 0,
-                'cost_in'             => 0,
-                'cost_out'            => 0,
-                'total_cost'          => 0,
-                'stock_cost_total'    => 0,
-                'period'              => ['from'=>$r->input('date_from'),'to'=>$r->input('date_to')],
-            ];
-        }
-
-        $storeId = $r->filled('store_id') ? (int)$r->input('store_id') : null;
-
-        /**
-         * CABANG 1: NON-STOCK PRODUCT
-         * -----------------------------------
-         * Tidak ikut inventory/ledger.
-         * Summary dihitung dari sales + sale_items:
-         *   - revenue dari sale_items.line_total
-         *   - COGS = 0
-         */
-        if (! $product->isStockTracked()) {
-            // Query sales untuk produk ini
-            $salesBase = DB::table('sale_items as si')
-                ->join('sales as s', 'si.sale_id', '=', 's.id')
-                ->where('si.product_id', $productId)
-                ->where('s.status', 'completed')
-                ->when($storeId !== null, fn($q) => $q->where('s.store_location_id', $storeId))
-                ->when($r->filled('date_from'), fn($q) => $q->where('s.created_at','>=',$r->input('date_from').' 00:00:00'))
-                ->when($r->filled('date_to'),   fn($q) => $q->where('s.created_at','<=',$r->input('date_to').' 23:59:59'));
-
-            $qtyOutSale      = (int)   (clone $salesBase)->sum('si.qty');
-            $grossRevenue    = (float) (clone $salesBase)->sum('si.line_total'); // net_unit * qty
-            $grossRevenueTot = $grossRevenue;
-
-            $cogs            = 0.0;
-            $cogsTotal       = 0.0;
-            $grossProfit     = $grossRevenue - $cogs;
-            $grossProfitTot  = $grossRevenueTot - $cogsTotal;
-
-            $avgSalePrice    = $qtyOutSale > 0 ? $grossRevenue    / $qtyOutSale : null;
-            $avgSalePriceTot = $qtyOutSale > 0 ? $grossRevenueTot / $qtyOutSale : null;
-
-            // ending_stock untuk non-stock secara konsep "unlimited" → biarkan nilai di DB (biasanya 0)
-            $endingStock = (int) DB::table('products')->where('id', $productId)->value('stock');
-
-            return [
-                'product_id'            => (int)$productId,
-
-                // SALE only
-                'gross_revenue'         => $grossRevenue,
-                'cogs'                  => $cogs,
-                'gross_profit'          => $grossProfit,
-                'avg_sale_price'        => $avgSalePrice,
-                'avg_cost'              => null, // tidak relevan untuk non-stock
-
-                // total (untuk sekarang sama dengan period karena tidak pakai ledger)
-                'gross_revenue_total'   => $grossRevenueTot,
-                'cogs_total'            => $cogsTotal,
-                'gross_profit_total'    => $grossProfitTot,
-                'avg_sale_price_total'  => $avgSalePriceTot,
-                'avg_cost_total'        => null,
-
-                // movement & posisi – non-stock selalu 0
-                'qty_in'                => 0,
-                'qty_out'               => 0,
-                'opening_qty'           => 0,
-                'opening_cost'          => 0,
-                'cost_in'               => 0,
-                'cost_out'              => 0,
-                'total_cost'            => 0,
-                'stock_cost_total'      => 0,
-                'ending_stock'          => $endingStock,
-
-                'period'                => ['from'=>$r->input('date_from'),'to'=>$r->input('date_to')],
-            ];
-        }
-
-        /**
-         * CABANG 2: STOCKED PRODUCT
-         * -----------------------------------
-         * Pakai logika lama: opening + stock_ledger.
-         */
-
-        if (!Schema::hasTable('stock_ledger')) {
-            return [
-                'product_id'          => (int)$productId,
-                'qty_in'              => 0,
-                'qty_out'             => 0,
-                'gross_revenue'       => 0,
-                'cogs'                => 0,
-                'gross_profit'        => 0,
-                'avg_sale_price'      => null,
-                'avg_cost'            => null,
-                'gross_revenue_total' => 0,
-                'cogs_total'          => 0,
-                'gross_profit_total'  => 0,
-                'avg_sale_price_total'=> null,
-                'avg_cost_total'      => null,
-                'ending_stock'        => (int) DB::table('products')->where('id',$productId)->value('stock'),
-                'opening_qty'         => 0,
-                'opening_cost'        => 0,
-                'cost_in'             => 0,
-                'cost_out'            => 0,
-                'total_cost'          => 0,
-                'stock_cost_total'    => 0,
-                'period'              => ['from'=>$r->input('date_from'),'to'=>$r->input('date_to')],
-            ];
-        }
-
-        // ===== Opening (IMPORT_INIT) =====
-        if (!method_exists($this, 'openingFromImportInit')) {
-            $opening = ['qty' => 0, 'cost' => 0];
-        } else {
-            $opening = $this->openingFromImportInit((int)$productId, $storeId);
-        }
-        $openingQty  = (float)($opening['qty'] ?? 0);
-        $openingCost = (float)($opening['cost'] ?? 0);
-
-        $base = DB::table('stock_ledger')->where('product_id',$productId)
-            ->when($storeId !== null, fn($q)=>$q->where('store_location_id',$storeId))
-            ->when($r->filled('date_from'), fn($q)=>$q->where('created_at','>=',$r->input('date_from').' 00:00:00'))
-            ->when($r->filled('date_to'),   fn($q)=>$q->where('created_at','<=',$r->input('date_to').' 23:59:59'));
-
-        // ================= SALE ONLY =================
-        $voidSaleIds = (clone $base)->where('ref_type','SALE_VOID')->pluck('ref_id')->filter()->unique()->values();
-
-        $saleValid = (clone $base)
-            ->where('ref_type','SALE')
-            ->where('direction', -1)
-            ->when($voidSaleIds->isNotEmpty(), fn($q)=>$q->whereNotIn('ref_id',$voidSaleIds));
-
-        $qtyOutSale = (int) (clone $saleValid)->sum('qty');
-
-        $grossRevenue = (float) (clone $saleValid)
-            ->selectRaw('COALESCE(SUM(qty * COALESCE(unit_price,0)),0) AS rev')
-            ->value('rev');
-
-        $cogs = (float) (clone $saleValid)
-            ->selectRaw('COALESCE(SUM(COALESCE(subtotal_cost, qty * COALESCE(unit_cost,0))),0) AS cgs')
-            ->value('cgs');
-
-        $grossProfit   = $grossRevenue - $cogs;
-        $avgSalePrice  = $qtyOutSale > 0 ? $grossRevenue / $qtyOutSale : null;
-        $avgCost       = $qtyOutSale > 0 ? $cogs / $qtyOutSale       : null;
-
-        /* ================= ALL TRANSACTIONS (tanpa ADD/IMPORT_INIT) ================= */
-        $inTypes  = ['GR','RECON_ADJUST']; // exclude ADD
-        $outTypes = ['SALE','DESTROY','RECON_ADJUST']; // exclude ADD
-
-        $qtyIn = (int) (clone $base)
-            ->whereIn('ref_type',$inTypes)
-            ->where('direction',+1)
-            ->sum('qty');
-
-        $costIn = (float) (clone $base)
-            ->whereIn('ref_type',$inTypes)
-            ->where('direction',+1)
-            ->selectRaw('COALESCE(SUM(COALESCE(subtotal_cost, qty * unit_cost)),0) AS ic')
-            ->value('ic');
-
-        $qtyOut = (int) (clone $base)
-            ->whereIn('ref_type',$outTypes)
-            ->where('direction',-1)
-            ->sum('qty');
-
-        $costOut = (float) (clone $base)
-            ->whereIn('ref_type',$outTypes)
-            ->where('direction',-1)
-            ->selectRaw('COALESCE(SUM(COALESCE(subtotal_cost, qty * unit_cost)),0) AS oc')
-            ->value('oc');
-
-        $grossRevenueTotal = (float) (clone $base)
-            ->whereIn('ref_type',['SALE','RECON_ADJUST'])
-            ->selectRaw('COALESCE(SUM(qty * COALESCE(unit_price,0)),0) AS rev')
-            ->value('rev');
-
-        $cogsTotal = (float) (clone $base)
-            ->whereIn('ref_type',$outTypes)
-            ->where('direction',-1)
-            ->selectRaw('COALESCE(SUM(COALESCE(subtotal_cost, qty * unit_cost)),0) AS cg')
-            ->value('cg');
-
-        $grossProfitTotal  = $grossRevenueTotal - $cogsTotal;
-        $avgSalePriceTotal = $qtyOut > 0 ? $grossRevenueTotal / $qtyOut : null;
-        $avgCostTotal      = $qtyOut > 0 ? $cogsTotal       / $qtyOut : null;
-
-        /* ================= STOCK POSITION ================= */
-        $endingStock = (int) DB::table('products')->where('id',$productId)->value('stock');
-        $costEnding  = $openingCost + $costIn - $costOut;
-
+    if (!$product) {
         return [
-            'product_id'            => (int)$productId,
-
-            // SALE only
-            'gross_revenue'         => $grossRevenue,
-            'cogs'                  => $cogs,
-            'gross_profit'          => $grossProfit,
-            'avg_sale_price'        => $avgSalePrice,
-            'avg_cost'              => $avgCost,
-
-            // Semua transaksi (tanpa ADD/IMPORT_INIT)
-            'gross_revenue_total'   => $grossRevenueTotal,
-            'cogs_total'            => $cogsTotal,
-            'gross_profit_total'    => $grossProfitTotal,
-            'avg_sale_price_total'  => $avgSalePriceTotal,
-            'avg_cost_total'        => $avgCostTotal,
-
-            // Stock movement & posisi akhir
-            'qty_in'                => $qtyIn,
-            'qty_out'               => $qtyOut,
-            'opening_qty'           => $openingQty,
-            'opening_cost'          => $openingCost,
-            'cost_in'               => $costIn,
-            'cost_out'              => $costOut,
-            'total_cost'            => $costEnding,
-            'stock_cost_total'      => $costEnding,
-            'ending_stock'          => $endingStock,
-
-            'period'                => ['from'=>$r->input('date_from'),'to'=>$r->input('date_to')],
+            'product_id' => $productId,
+            'qty_in' => 0, 'qty_out' => 0,
+            'gross_revenue' => 0, 'cogs' => 0, 'gross_profit' => 0,
+            'avg_sale_price' => null, 'avg_cost' => null,
+            'gross_revenue_total' => 0, 'cogs_total' => 0, 'gross_profit_total' => 0,
+            'avg_sale_price_total' => null, 'avg_cost_total' => null,
+            'ending_stock' => 0,
+            'opening_qty' => 0, 'opening_cost' => 0,
+            'cost_in' => 0, 'cost_out' => 0, 'total_cost' => 0, 'stock_cost_total' => 0,
+            'period' => ['from'=>$r->input('date_from'),'to'=>$r->input('date_to')],
         ];
     }
+
+    $storeId = $r->filled('store_id') ? (int)$r->input('store_id') : null;
+
+    /* ================= NON STOCK ================= */
+
+    if (!$product->isStockTracked()) {
+
+        $salesBase = DB::table('sale_items as si')
+            ->join('sales as s', 's.id', '=', 'si.sale_id')
+            ->where('si.product_id', $productId)
+            ->where('s.status', 'completed')
+            ->when($storeId !== null, fn($q)=>$q->where('s.store_location_id',$storeId))
+            ->when($r->filled('date_from'), fn($q)=>$q->where('s.created_at','>=',$r->input('date_from').' 00:00:00'))
+            ->when($r->filled('date_to'), fn($q)=>$q->where('s.created_at','<=',$r->input('date_to').' 23:59:59'));
+
+        $qtyOutSale  = (int)(clone $salesBase)->sum('si.qty');
+        $itemRevenue = (float)(clone $salesBase)->sum('si.line_total');
+
+        $saleSubtotal = (float)(clone $salesBase)->selectRaw('SUM(DISTINCT s.subtotal)')->value('SUM(DISTINCT s.subtotal)');
+        $saleDiscount = (float)(clone $salesBase)->selectRaw('SUM(DISTINCT s.discount)')->value('SUM(DISTINCT s.discount)');
+
+        $allocatedDiscount = ($saleSubtotal > 0 && $saleDiscount > 0)
+            ? ($itemRevenue / $saleSubtotal) * $saleDiscount
+            : 0;
+
+        $grossRevenue = $itemRevenue - $allocatedDiscount;
+        $grossProfit  = $grossRevenue;
+
+        $avgSalePrice = $qtyOutSale > 0 ? $grossRevenue / $qtyOutSale : null;
+
+        $endingStock = (int)DB::table('products')->where('id',$productId)->value('stock');
+
+        return [
+            'product_id' => $productId,
+            'gross_revenue' => $grossRevenue,
+            'cogs' => 0,
+            'gross_profit' => $grossProfit,
+            'avg_sale_price' => $avgSalePrice,
+            'avg_cost' => null,
+
+            'gross_revenue_total' => $grossRevenue,
+            'cogs_total' => 0,
+            'gross_profit_total' => $grossProfit,
+            'avg_sale_price_total' => $avgSalePrice,
+            'avg_cost_total' => null,
+
+            'qty_in' => 0,
+            'qty_out' => $qtyOutSale,
+            'opening_qty' => 0,
+            'opening_cost' => 0,
+            'cost_in' => 0,
+            'cost_out' => 0,
+            'total_cost' => 0,
+            'stock_cost_total' => 0,
+            'ending_stock' => $endingStock,
+
+            'period' => ['from'=>$r->input('date_from'),'to'=>$r->input('date_to')],
+        ];
+    }
+
+    /* ================= STOCK PRODUCT ================= */
+
+    $opening = method_exists($this,'openingFromImportInit')
+        ? $this->openingFromImportInit($productId,$storeId)
+        : ['qty'=>0,'cost'=>0];
+
+    $openingQty  = (float)$opening['qty'];
+    $openingCost = (float)$opening['cost'];
+
+    $saleQuery = DB::table('stock_ledger as sl')
+        ->join('sales as s', 's.id', '=', 'sl.ref_id')
+        ->join('sale_items as si', function($join){
+            $join->on('si.sale_id','=','s.id')
+                 ->on('si.product_id','=','sl.product_id');
+        })
+        ->where('sl.product_id',$productId)
+        ->where('sl.ref_type','SALE')
+        ->where('sl.direction',-1)
+        ->where('s.status','completed')
+        ->when($storeId !== null, fn($q)=>$q->where('sl.store_location_id',$storeId))
+        ->when($r->filled('date_from'), fn($q)=>$q->where('sl.created_at','>=',$r->input('date_from').' 00:00:00'))
+        ->when($r->filled('date_to'), fn($q)=>$q->where('sl.created_at','<=',$r->input('date_to').' 23:59:59'));
+
+    $qtyOutSale  = (int)(clone $saleQuery)->sum('sl.qty');
+    $itemRevenue = (float)(clone $saleQuery)->sum('si.line_total');
+
+    $saleSubtotal = (float)(clone $saleQuery)->selectRaw('SUM(DISTINCT s.subtotal)')->value('SUM(DISTINCT s.subtotal)');
+    $saleDiscount = (float)(clone $saleQuery)->selectRaw('SUM(DISTINCT s.discount)')->value('SUM(DISTINCT s.discount)');
+
+    $allocatedDiscount = ($saleSubtotal > 0 && $saleDiscount > 0)
+        ? ($itemRevenue / $saleSubtotal) * $saleDiscount
+        : 0;
+
+    $grossRevenue = $itemRevenue - $allocatedDiscount;
+
+    $cogs = (float)(clone $saleQuery)
+        ->selectRaw('SUM(COALESCE(sl.subtotal_cost, sl.qty * sl.unit_cost))')
+        ->value('SUM(COALESCE(sl.subtotal_cost, sl.qty * sl.unit_cost))');
+
+    $grossProfit = $grossRevenue - $cogs;
+
+    $avgSalePrice = $qtyOutSale > 0 ? $grossRevenue / $qtyOutSale : null;
+    $avgCost      = $qtyOutSale > 0 ? $cogs / $qtyOutSale : null;
+
+    $endingStock = (int)DB::table('products')->where('id',$productId)->value('stock');
+
+    $costIn = (float)DB::table('stock_ledger')
+        ->where('product_id',$productId)
+        ->where('direction',1)
+        ->sum(DB::raw('COALESCE(subtotal_cost, qty * unit_cost)'));
+
+    $costOut = (float)DB::table('stock_ledger')
+        ->where('product_id',$productId)
+        ->where('direction',-1)
+        ->sum(DB::raw('COALESCE(subtotal_cost, qty * unit_cost)'));
+
+    $costEnding = $openingCost + $costIn - $costOut;
+
+    return [
+        'product_id' => $productId,
+
+        'gross_revenue' => $grossRevenue,
+        'cogs' => $cogs,
+        'gross_profit' => $grossProfit,
+        'avg_sale_price' => $avgSalePrice,
+        'avg_cost' => $avgCost,
+
+        'gross_revenue_total' => $grossRevenue,
+        'cogs_total' => $cogs,
+        'gross_profit_total' => $grossProfit,
+        'avg_sale_price_total' => $avgSalePrice,
+        'avg_cost_total' => $avgCost,
+
+        'qty_in' => 0,
+        'qty_out' => $qtyOutSale,
+        'opening_qty' => $openingQty,
+        'opening_cost' => $openingCost,
+        'cost_in' => $costIn,
+        'cost_out' => $costOut,
+        'total_cost' => $costEnding,
+        'stock_cost_total' => $costEnding,
+        'ending_stock' => $endingStock,
+
+        'period' => ['from'=>$r->input('date_from'),'to'=>$r->input('date_to')],
+    ];
+}
 
     // ==== BATCH: GET /api/inventory/products/summary ====
     public function productSummaryBatch(Request $r)
