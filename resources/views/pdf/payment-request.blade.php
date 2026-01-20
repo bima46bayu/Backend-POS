@@ -94,6 +94,21 @@ table { page-break-inside: auto; }
     padding-top:40px;
     width:33%;
 }
+
+.signature-box {
+    position: relative;
+    height: 0px;   /* tinggi area tanda tangan */
+}
+
+.signature-box img {
+    position: absolute;
+    top: -36px;     /* naik/turun tanda tangan */
+    left: 50%;
+    transform: translateX(-50%);
+    height: 110px;   /* ukuran tanda tangan */
+    object-fit: contain;
+}
+
 </style>
 </head>
 <body>
@@ -209,12 +224,32 @@ $totalTransfer += (float)$item->transfer_amount;
 <td>Diketahui Oleh,</td>
 <td>Disetujui Oleh,</td>
 </tr>
+
+<tr>
+<td>
+    <div class="signature-box">
+        <img src="{{ public_path('signatures/sig-amel.png') }}">
+    </div>
+</td>
+<td>
+    <div class="signature-box">
+        <img src="{{ public_path('signatures/sig-bu-susi.png') }}">
+    </div>
+</td>
+<td>
+    <div class="signature-box">
+        <!-- kosong / nanti -->
+    </div>
+</td>
+</tr>
+
 <tr>
 <td><b>{{ auth()->user()->name ?? 'Nuramelia Hakim' }}</b></td>
 <td><b>Susi Kartika C.</b></td>
 <td><b>Song JungLog</b></td>
 </tr>
 </table>
+
 
 <!-- ===== dompdf native footer ===== -->
 <script type="text/php">

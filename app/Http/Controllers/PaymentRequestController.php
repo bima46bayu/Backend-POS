@@ -139,7 +139,9 @@ class PaymentRequestController extends Controller
         ))
         ->setPaper('A4', 'portrait')
         ->setOptions([
-            'isPhpEnabled' => true
+            'isPhpEnabled' => true,
+            'isRemoteEnabled' => true,
+            'chroot' => public_path(),
         ]);
 
 
