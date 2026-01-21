@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\PaymentRequest;
 use Barryvdh\DomPDF\Facade\Pdf;
+use Illuminate\Support\Facades\URL;
 
 class PaymentRequestController extends Controller
 {
@@ -112,6 +113,14 @@ class PaymentRequestController extends Controller
         return response()->noContent();
     }
 
+    public function getPdfLink($id)
+    {
+        $url = URL::signedRoute('payment.pdf', ['id' => $id]);
+
+        return response()->json([
+            'pdf_url' => $url
+        ]);
+    }
 
     public function pdf($id)
     {
@@ -123,12 +132,15 @@ class PaymentRequestController extends Controller
             'bankAccount'
         ])->findOrFail($id);
 
+        // Authorization check
+        if ($pr->user_id !== auth()->id()) {
+            abort(403, 'Unauthorized');
+        }
 
-        $totalTagihan = $pr->items->sum('amount');
+        $totalTagihan  = $pr->items->sum('amount');
         $totalPotongan = $pr->items->sum('deduction');
         $totalTransfer = $pr->items->sum('transfer_amount');
-        $totalSaldo = $pr->balances->sum('saldo');
-
+        $totalSaldo    = $pr->balances->sum('saldo');
 
         $pdf = Pdf::loadView('pdf.payment-request', compact(
             'pr',
@@ -143,7 +155,6 @@ class PaymentRequestController extends Controller
             'isRemoteEnabled' => true,
             'chroot' => public_path(),
         ]);
-
 
         return $pdf->stream("Payment Request {$pr->id}.pdf");
     }

@@ -32,6 +32,28 @@ table { page-break-inside: auto; }
     margin:6px 0 6px 0;
 }
 
+.header-wrapper {
+    position: relative;
+    width: 100%;
+    min-height: 70px;
+    margin-bottom: 6px;
+}
+
+.header-logo-abs {
+    position: absolute;
+    left: 0;
+    top: 0;
+}
+
+.header-logo-abs img {
+    height: 75px;
+}
+
+.header-center {
+    text-align: center;
+}
+
+
 /* INFO */
 .info-table { width:100%; margin-bottom:6px; }
 .info-table td { padding:2px 0; }
@@ -114,17 +136,19 @@ table { page-break-inside: auto; }
 <body>
 
 <!-- HEADER -->
-<table class="header-table">
-<tr>
-<td width="15%"></td>
-<td width="70%">
-    <div class="title">FORM PERMINTAAN PEMBAYARAN</div>
-    <div class="subtitle">Payment Request</div>
-    <div class="company">DUNIA INOVASI SELARAS</div>
-</td>
-<td width="15%"></td>
-</tr>
-</table>
+<div class="header-wrapper">
+
+    <div class="header-logo-abs">
+        <img src="{{ public_path('signatures/logo-dunia-inovasi.png') }}">
+    </div>
+
+    <div class="header-center">
+        <div class="title">FORM PERMINTAAN PEMBAYARAN</div>
+        <div class="subtitle">Payment Request</div>
+        <div class="company">DUNIA INOVASI SELARAS</div>
+    </div>
+
+</div>
 
 <div class="hr"></div>
 
@@ -204,7 +228,7 @@ $totalTransfer += (float)$item->transfer_amount;
 @foreach($pr->balances as $i=>$b)
 <tr>
 <td width="6%">{{ $i+1 }}.</td>
-<td width="64%">{{ $b->bankAccount?->bank_name }}, {{ $b->bankAccount?->account_number }}</td>
+<td width="64%">{{ $b->bankAccount?->bank_name }} {{ $b->bankAccount?->account_type }}, {{ $b->bankAccount?->account_number }}</td>
 <td class="right">{{ number_format($b->saldo,2) }}</td>
 </tr>
 @endforeach

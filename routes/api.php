@@ -49,7 +49,10 @@ Route::prefix('store-locations')->group(function () {
     Route::get('/{id}/logo', [StoreLocationController::class, 'logo'])->whereNumber('id');
 });
 
-Route::get('/payment-requests/{id}/pdf', [PaymentRequestController::class, 'pdf']);
+Route::get('/payment-requests/{id}/pdf', [PaymentRequestController::class, 'pdf'])
+    ->name('payment.pdf')
+    ->middleware('signed');
+Route::get('/payment-requests/{id}/pdf-link', [PaymentRequestController::class, 'getPdfLink']);
 
 /*
 |--------------------------------------------------------------------------
