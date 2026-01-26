@@ -23,34 +23,74 @@ class SaleController extends Controller
 {
     public function index(Request $r)
     {
-        // tambahkan storeLocation di eager load
+        $user = $r->user();
+
         $q = Sale::with(['items.product', 'cashier', 'storeLocation', 'payments'])
             ->latest('id');
 
-        if ($r->filled('code'))       $q->where('code', 'like', '%' . $r->code . '%');
-        if ($r->filled('cashier_id')) $q->where('cashier_id', $r->cashier_id);
-        if ($r->filled('status'))     $q->where('status', $r->status);
-        if ($r->filled('from'))       $q->whereDate('created_at', '>=', $r->from);
-        if ($r->filled('to'))         $q->whereDate('created_at', '<=', $r->to);
+        /* ==============================
+        * 🔐 STORE FILTER (WAJIB)
+        * ============================== */
 
-        // 🔥 sekarang langsung pakai kolom sales.store_location_id (lebih cepat)
-        if ($r->filled('store_location_id')) {
-            $q->where('store_location_id', $r->store_location_id);
+        if ($user && strtolower($user->role) !== 'admin') {
+            // Kasir / user biasa → kunci ke store sendiri
+            if ($user->store_location_id) {
+                $q->where('store_location_id', $user->store_location_id);
+            } else {
+                // safety: kalau user tidak punya store, jangan tampilkan apa pun
+                $q->whereRaw('1 = 0');
+            }
+        } else {
+            // Admin → boleh filter manual
+            if ($r->filled('store_location_id')) {
+                $q->where('store_location_id', $r->store_location_id);
+            }
+            // kalau tidak diisi → tampilkan semua store
+        }
+
+        /* ==============================
+        * 🔎 FILTER LAIN
+        * ============================== */
+
+        if ($r->filled('code')) {
+            $q->where('code', 'like', '%' . $r->code . '%');
+        }
+
+        if ($r->filled('cashier_id')) {
+            $q->where('cashier_id', $r->cashier_id);
+        }
+
+        if ($r->filled('status')) {
+            $q->where('status', $r->status);
+        }
+
+        if ($r->filled('from')) {
+            $q->whereDate('created_at', '>=', $r->from);
+        }
+
+        if ($r->filled('to')) {
+            $q->whereDate('created_at', '<=', $r->to);
         }
 
         if ($r->boolean('only_discount')) {
             $q->where(function ($qq) {
                 $qq->where('discount', '>', 0)
-                    ->orWhereHas('items', function ($qi) {
-                        $qi->where('discount_nominal', '>', 0);
-                    });
+                ->orWhereHas('items', function ($qi) {
+                    $qi->where('discount_nominal', '>', 0);
+                });
             });
         }
 
-        $perPage = (int)($r->per_page ?? 10);
+        /* ==============================
+        * 📄 PAGINATION
+        * ============================== */
+
+        $perPage = (int) ($r->per_page ?? 10);
         $perPage = max(1, min(50000, $perPage));
 
-        return response()->json($q->paginate($perPage));
+        return response()->json(
+            $q->paginate($perPage)
+        );
     }
 
     public function show(Sale $sale)
