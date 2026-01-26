@@ -14,8 +14,8 @@ class InventoryController extends Controller
     private function normDir(string $refType = null, $direction = null): int
     {
         $t = strtoupper((string)$refType);
-        if (in_array($t, ['SALE','DESTROY','SALE_VOID'], true)) return -1;
-        if (in_array($t, ['GR','ADD'], true)) return +1;
+        if (in_array($t, ['SALE','DESTROY'], true)) return -1;
+        if (in_array($t, ['SALE_VOID','GR','ADD'], true)) return +1;
         return (int)($direction ?? 0);
     }
 
@@ -464,17 +464,32 @@ class InventoryController extends Controller
 
     $endingStock = (int)DB::table('products')->where('id',$productId)->value('stock');
 
-    $costIn = (float)DB::table('stock_ledger')
-        ->where('product_id',$productId)
-        ->where('direction',1)
+    $costIn = (float) DB::table('stock_ledger')
+        ->where('product_id', $productId)
+        ->where('direction', 1)
+        ->where('ref_type', 'GR') // ⬅️ HANYA GR
+        ->when($storeId !== null, fn($q)=>$q->where('store_location_id',$storeId))
         ->sum(DB::raw('COALESCE(subtotal_cost, qty * unit_cost)'));
 
-    $costOut = (float)DB::table('stock_ledger')
-        ->where('product_id',$productId)
-        ->where('direction',-1)
-        ->sum(DB::raw('COALESCE(subtotal_cost, qty * unit_cost)'));
+    $costOut = (float) DB::table('stock_ledger as sl')
+        ->where('sl.product_id', $productId)
+        ->where('sl.direction', -1)
+        ->where('sl.ref_type', 'SALE')
+        ->when($storeId !== null, fn($q)=>$q->where('sl.store_location_id',$storeId))
 
-    $costEnding = $openingCost + $costIn - $costOut;
+        // ⬇⬇⬇ PENTING: exclude sale yang sudah di-void
+        ->whereNotIn('sl.ref_id', function($q){
+            $q->select('ref_id')
+            ->from('stock_ledger')
+            ->where('ref_type', 'SALE_VOID');
+        })
+
+        ->sum(DB::raw('COALESCE(sl.subtotal_cost, sl.qty * sl.unit_cost)'));
+
+    $costEnding = (float) DB::table('inventory_layers')
+        ->where('product_id', $productId)
+        ->when($storeId !== null, fn($q)=>$q->where('store_location_id',$storeId))
+        ->sum(DB::raw('qty_remaining * COALESCE(unit_landed_cost, unit_cost, unit_price, 0)'));
 
     return [
         'product_id' => $productId,

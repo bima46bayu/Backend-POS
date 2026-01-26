@@ -61,92 +61,116 @@ class ProductController extends Controller
      */
     public function index(Request $request)
     {
-        $perPage = (int) $request->input('per_page', 10);
-        $perPage = $perPage > 100 ? 100 : ($perPage < 1 ? 10 : $perPage);
+        $q = Product::query();
 
-        $sort = (string) $request->input('sort', 'id');
-        $dir  = strtolower((string) $request->input('dir', 'asc')) === 'desc' ? 'desc' : 'asc';
-
-        $allowedSorts = ['id','name','sku','price','updated_at','created_at'];
-        if (! in_array($sort, $allowedSorts, true)) {
-            $sort = 'id';
-        }
-
-        $search           = trim((string) $request->input('search', ''));
-        $skuExact         = trim((string) $request->input('sku', ''));
-        $categoryId       = $request->input('category_id');
-        $subCategoryId    = $request->input('sub_category_id');
-        $minPrice         = $request->input('min_price');
-        $maxPrice         = $request->input('max_price');
-        $inventoryTypeReq = $request->input('inventory_type'); // optional filter: stock / service / non_stock
-
-        // ⬇️ BACA store_location_id *atau* store_id, lalu fallback ke store user
-        $storeIdFromReq =
-            $request->integer('store_location_id') ?: $request->integer('store_id');
-
+        // ===============================
+        // 1) Ambil user & store_location_id
+        // ===============================
         $user = $request->user();
 
-        $storeId =
-            $storeIdFromReq
-            ?? ($user->store_location_id ?? optional($user->storeLocation)->id ?? optional($user->store)->id)
-            ?? null;
+        $storeId = $request->query('store_location_id');
 
-        $onlyStore = $request->boolean('only_store', false);
+        if (!$storeId && $user) {
+            $storeId = $user->store_location_id
+                ?? optional($user->storeLocation)->id
+                ?? optional($user->store)->id
+                ?? null;
+        }
 
-        $q = Product::query()
-            ->select([
-                'products.id',
-                'products.category_id',
-                'products.sub_category_id',
-                'products.sku',
-                'products.name',
-                'products.description',
-                'products.price',
-                'products.stock',
-                'products.image_url',
-                'products.store_location_id',
-                'products.created_by',
-                'products.created_at',
-                'products.updated_at',
-                'products.unit_id',
-                'products.inventory_type', // ⬅️ penting buat POS (stock vs non-stock)
-                DB::raw('(SELECT name FROM units WHERE units.id = products.unit_id LIMIT 1) AS unit_name'),
-            ])
-            ->when($skuExact !== '', fn($qq) => $qq->where('sku', $skuExact))
-            ->when($search !== '', function ($qq) use ($search) {
-                $qq->where(function ($w) use ($search) {
-                    $w->where('name', 'like', "%{$search}%")
-                      ->orWhere('sku', 'like', "%{$search}%");
-                });
-            })
-            ->when($categoryId, function ($qq) use ($categoryId) {
-                is_array($categoryId)
-                    ? $qq->whereIn('category_id', array_filter($categoryId))
-                    : $qq->where('category_id', $categoryId);
-            })
-            ->when($subCategoryId, function ($qq) use ($subCategoryId) {
-                is_array($subCategoryId)
-                    ? $qq->whereIn('sub_category_id', array_filter($subCategoryId))
-                    : $qq->where('sub_category_id', $subCategoryId);
-            })
-            ->when($minPrice !== null && $minPrice !== '', fn($qq) => $qq->where('price', '>=', (float) $minPrice))
-            ->when($maxPrice !== null && $maxPrice !== '', fn($qq) => $qq->where('price', '<=', (float) $maxPrice))
-            ->when($inventoryTypeReq !== null && $inventoryTypeReq !== '', function ($qq) use ($inventoryTypeReq) {
-                $qq->where('inventory_type', $inventoryTypeReq);
-            });
-
-        // ⬇️ FILTER store
+        // ===============================
+        // 2) Filter store
+        // ===============================
         if ($storeId) {
-            if ($onlyStore) {
-                // hanya produk milik store itu
-                $q->where('store_location_id', $storeId);
+            $q->where('products.store_location_id', $storeId);
+        }
+
+        // ===============================
+        // 3) Select fields
+        // ===============================
+        $q->select([
+            'products.id',
+            'products.category_id',
+            'products.sub_category_id',
+            'products.sku',
+            'products.name',
+            'products.description',
+            'products.price',
+            'products.stock',
+            'products.image_url',
+            'products.store_location_id',
+            'products.created_by',
+            'products.created_at',
+            'products.updated_at',
+            'products.unit_id',
+            'products.inventory_type',
+            DB::raw('(SELECT name FROM units WHERE units.id = products.unit_id LIMIT 1) AS unit_name'),
+        ]);
+
+        // ===============================
+        // 4) Search
+        // ===============================
+        if ($s = trim($request->query('search', ''))) {
+            $q->where(function ($qq) use ($s) {
+                $qq->where('products.name', 'like', "%{$s}%")
+                ->orWhere('products.sku', 'like', "%{$s}%");
+            });
+        }
+
+        // ===============================
+        // 5) Category filter
+        // ===============================
+        if ($categoryId = $request->query('category_id')) {
+            if (is_array($categoryId)) {
+                $q->whereIn('products.category_id', array_filter($categoryId));
             } else {
-                // kalau kamu pakai scope forStore(global+store), tetap bisa
-                $q->forStore($storeId, true);
+                $q->where('products.category_id', $categoryId);
             }
         }
 
+        if ($subCategoryId = $request->query('sub_category_id')) {
+            if (is_array($subCategoryId)) {
+                $q->whereIn('products.sub_category_id', array_filter($subCategoryId));
+            } else {
+                $q->where('products.sub_category_id', $subCategoryId);
+            }
+        }
+
+        // ===============================
+        // 6) Price filter
+        // ===============================
+        if ($request->filled('min_price')) {
+            $q->where('products.price', '>=', (float) $request->query('min_price'));
+        }
+
+        if ($request->filled('max_price')) {
+            $q->where('products.price', '<=', (float) $request->query('max_price'));
+        }
+
+        // ===============================
+        // 7) Inventory type filter
+        // ===============================
+        if ($invType = $request->query('inventory_type')) {
+            $q->where('products.inventory_type', $invType);
+        }
+
+        // ===============================
+        // 8) Sorting
+        // ===============================
+        $allowedSorts = ['id','name','sku','price','updated_at','created_at'];
+        $sort = $request->query('sort', 'id');
+        $dir  = strtolower($request->query('dir', 'asc')) === 'desc' ? 'desc' : 'asc';
+
+        if (!in_array($sort, $allowedSorts, true)) {
+            $sort = 'id';
+        }
+
         $q->orderBy($sort, $dir);
+
+        // ===============================
+        // 9) Pagination
+        // ===============================
+        $perPage = (int) $request->query('per_page', 10);
+        $perPage = max(1, min((int)$request->query('per_page', 100), 2000));
 
         $p = $q->paginate($perPage)->appends($request->query());
 
