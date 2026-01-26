@@ -29,23 +29,14 @@ class SaleController extends Controller
             ->latest('id');
 
         /* ==============================
-        * 🔐 STORE FILTER (WAJIB)
+        * 🔐 STORE FILTER (WAJIB - SEMUA ROLE)
         * ============================== */
 
-        if ($user && strtolower($user->role) !== 'admin') {
-            // Kasir / user biasa → kunci ke store sendiri
-            if ($user->store_location_id) {
-                $q->where('store_location_id', $user->store_location_id);
-            } else {
-                // safety: kalau user tidak punya store, jangan tampilkan apa pun
-                $q->whereRaw('1 = 0');
-            }
+        if ($user && $user->store_location_id) {
+            $q->where('store_location_id', $user->store_location_id);
         } else {
-            // Admin → boleh filter manual
-            if ($r->filled('store_location_id')) {
-                $q->where('store_location_id', $r->store_location_id);
-            }
-            // kalau tidak diisi → tampilkan semua store
+            // safety: user tanpa store tidak boleh lihat apa pun
+            $q->whereRaw('1 = 0');
         }
 
         /* ==============================
