@@ -53,22 +53,15 @@ class AuthController extends Controller
         // Hapus semua token lama user ini
         $user->tokens()->delete();
 
-        // Hitung waktu expire: akhir hari ini (23:59:59)
-        // $expiresAt = Carbon::now()->addMinute();
-        
-        // OPSI 2: Atau expire besok jam 00:00 (lebih clean)
-        $expiresAt = Carbon::tomorrow()->startOfDay();
-
-        // Buat token dengan expiration
-        $token = $user->createToken('api-token', ['*'], $expiresAt)->plainTextToken;
+        // Buat token TANPA expiry (stabil untuk POS)
+        $token = $user->createToken('pos-token')->plainTextToken;
 
         $user->load('storeLocation');
         $user->makeHidden(['password', 'remember_token']);
 
         return response()->json([
-            'user'       => $user,
-            'token'      => $token,
-            'expires_at' => $expiresAt->toDateTimeString(), // Info untuk frontend
+            'user'  => $user,
+            'token' => $token,
         ]);
     }
 
