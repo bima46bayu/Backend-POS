@@ -59,7 +59,7 @@ Route::get('/payment-requests/{id}/pdf-link', [PaymentRequestController::class, 
 | AUTHENTICATED
 |--------------------------------------------------------------------------
 */
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
 
     /*
     | Auth
