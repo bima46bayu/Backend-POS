@@ -17,18 +17,16 @@ class ReportController extends Controller
         $term     = trim((string) $r->input('q', ''));
 
         $storeIdReq    = $r->filled('store_id') ? (int) $r->input('store_id') : null;
-        $allStores     = $r->boolean('all'); // admin → All Stores
-        $paymentMethod = $r->input('payment_method'); // filter metode pembayaran
+        $allStores     = $r->boolean('all');
+        $paymentMethod = $r->input('payment_method');
 
-        $from = $dateFrom ? $dateFrom.' 00:00:00' : null;
-        $to   = $dateTo   ? $dateTo.' 23:59:59' : null;
+        $from = $dateFrom ? $dateFrom . ' 00:00:00' : null;
+        $to   = $dateTo   ? $dateTo   . ' 23:59:59' : null;
 
         $user = $r->user();
         $role = strtolower($user->role ?? '');
         $userStoreId = $user->store_location_id ?? ($user->store_location->id ?? null);
 
-        // Admin: default = store user (kalau store_id kosong), bisa pilih ALL (all=1) atau store lain
-        // Kasir: paksa store user
         if ($role === 'admin') {
             $effectiveStoreId = $allStores ? null : ($storeIdReq ?? $userStoreId);
         } else {
@@ -39,49 +37,53 @@ class ReportController extends Controller
         }
 
         try {
-            // ========== BASE QUERY (per baris sale_item) ==========
+            // ================= BASE QUERY =================
             $base = DB::table('sale_items as si')
                 ->join('sales as s', 's.id', '=', 'si.sale_id')
                 ->join('products as p', 'p.id', '=', 'si.product_id')
+                ->leftJoin('sub_categories as sc', 'sc.id', '=', 'p.sub_category_id')
+                ->leftJoin('categories as c', 'c.id', '=', 'sc.category_id')
                 ->leftJoin('users as u', 'u.id', '=', 's.cashier_id')
-                ->leftJoin('sale_payments as sp', 'sp.sale_id', '=', 's.id') // <-- join ke payment
+                ->leftJoin('sale_payments as sp', 'sp.sale_id', '=', 's.id')
                 ->when($from, fn($q) => $q->where('s.created_at', '>=', $from))
-                ->when($to,   fn($q) => $q->where('s.created_at', '<=', $to))
+                ->when($to, fn($q) => $q->where('s.created_at', '<=', $to))
                 ->when($effectiveStoreId !== null, function ($q) use ($effectiveStoreId) {
                     $ors = [];
                     if (Schema::hasColumn('sales', 'store_location_id'))   $ors[] = ['s','store_location_id'];
                     if (Schema::hasColumn('users', 'store_location_id'))   $ors[] = ['u','store_location_id'];
                     if (Schema::hasColumn('products','store_location_id')) $ors[] = ['p','store_location_id'];
                     if (empty($ors)) return $q;
+
                     return $q->where(function ($w) use ($ors, $effectiveStoreId) {
                         foreach ($ors as [$alias, $col]) {
                             $w->orWhere("$alias.$col", '=', $effectiveStoreId);
                         }
                     });
                 })
-                // filter metode pembayaran (pakai sale_payments.method)
                 ->when($paymentMethod !== null && $paymentMethod !== '', function ($q) use ($paymentMethod) {
                     return $q->where('sp.method', $paymentMethod);
                 })
                 ->when($term !== '', function ($qq) use ($term) {
-                    $like = '%'.mb_strtolower($term).'%';
+                    $like = '%' . mb_strtolower($term) . '%';
                     return $qq->where(function ($w) use ($like) {
-                        $w->whereRaw('LOWER(p.sku)  LIKE ?', [$like])
+                        $w->whereRaw('LOWER(p.sku) LIKE ?', [$like])
                           ->orWhereRaw('LOWER(p.name) LIKE ?', [$like]);
                     });
                 });
 
-            // ========== AGREGASI PER PRODUK ==========
+            // ================= AGGREGATION =================
             $grouped = DB::query()
                 ->fromSub(
                     $base->select([
                         'si.product_id',
                         'p.sku',
                         'p.name as product_name',
+                        'c.name as category_name',
+                        'sc.name as subcategory_name',
                         DB::raw('si.qty as qty_each'),
                         DB::raw('si.line_total as gross_each'),
                         's.created_at as sold_at',
-                        's.id as sale_id', // buat transaction_count
+                        's.id as sale_id',
                     ]),
                     't'
                 )
@@ -89,28 +91,31 @@ class ReportController extends Controller
                     'product_id',
                     'sku',
                     'product_name',
-                    DB::raw('SUM(qty_each)   as qty'),
+                    'category_name',
+                    'subcategory_name',
+                    DB::raw('SUM(qty_each) as qty'),
                     DB::raw('SUM(gross_each) as gross'),
-                    DB::raw('MAX(sold_at)    as last_sold_at'),
+                    DB::raw('MAX(sold_at) as last_sold_at'),
                     DB::raw('COUNT(DISTINCT sale_id) as transaction_count'),
                 ])
-                ->groupBy('product_id', 'sku', 'product_name')
+                ->groupBy(
+                    'product_id',
+                    'sku',
+                    'product_name',
+                    'category_name',
+                    'subcategory_name'
+                )
                 ->orderByDesc('gross');
 
             $p = $grouped->paginate($perPage, ['*'], 'page', $page);
 
-            // product_id yang muncul di halaman ini
             $productIds = collect($p->items())
                 ->pluck('product_id')
                 ->filter()
                 ->unique()
                 ->values();
 
-            // ========== DETAIL TRANSAKSI per PRODUCT (buat modal) ==========
-            $transactionNoExpr = Schema::hasColumn('sales', 'sale_no')
-                ? 's.sale_no'
-                : 's.id';
-
+            // ================= DETAIL TRANSACTIONS =================
             $detailBase = DB::table('sale_items as si')
                 ->join('sales as s', 's.id', '=', 'si.sale_id')
                 ->join('products as p', 'p.id', '=', 'si.product_id')
@@ -118,26 +123,25 @@ class ReportController extends Controller
                 ->leftJoin('sale_payments as sp', 'sp.sale_id', '=', 's.id')
                 ->whereIn('si.product_id', $productIds)
                 ->when($from, fn($q) => $q->where('s.created_at', '>=', $from))
-                ->when($to,   fn($q) => $q->where('s.created_at', '<=', $to))
+                ->when($to, fn($q) => $q->where('s.created_at', '<=', $to))
                 ->when($effectiveStoreId !== null, function ($q) use ($effectiveStoreId) {
                     $ors = [];
                     if (Schema::hasColumn('sales', 'store_location_id'))   $ors[] = ['s','store_location_id'];
                     if (Schema::hasColumn('users', 'store_location_id'))   $ors[] = ['u','store_location_id'];
                     if (Schema::hasColumn('products','store_location_id')) $ors[] = ['p','store_location_id'];
                     if (empty($ors)) return $q;
+
                     return $q->where(function ($w) use ($ors, $effectiveStoreId) {
                         foreach ($ors as [$alias, $col]) {
                             $w->orWhere("$alias.$col", '=', $effectiveStoreId);
                         }
                     });
                 })
-                ->when($paymentMethod !== null && $paymentMethod !== '', function ($q) use ($paymentMethod) {
-                    return $q->where('sp.method', $paymentMethod);
-                })
+                ->when($paymentMethod !== null && $paymentMethod !== '', fn($q) => $q->where('sp.method', $paymentMethod))
                 ->when($term !== '', function ($qq) use ($term) {
-                    $like = '%'.mb_strtolower($term).'%';
+                    $like = '%' . mb_strtolower($term) . '%';
                     return $qq->where(function ($w) use ($like) {
-                        $w->whereRaw('LOWER(p.sku)  LIKE ?', [$like])
+                        $w->whereRaw('LOWER(p.sku) LIKE ?', [$like])
                           ->orWhereRaw('LOWER(p.name) LIKE ?', [$like]);
                     });
                 });
@@ -150,14 +154,14 @@ class ReportController extends Controller
                     DB::raw('CASE WHEN si.qty = 0 THEN 0 ELSE si.line_total / si.qty END as price'),
                     DB::raw('si.line_total as total'),
                     's.created_at as date',
-                    's.code as transaction_no',   // ⬅️ pakai kolom code dari tabel sales
+                    's.code as transaction_no',
                     'sp.method as payment_method',
                 ])
                 ->orderBy('s.created_at')
                 ->get()
                 ->groupBy('product_id');
 
-            // ========== SHAPE RESPONSE ==========
+            // ================= RESPONSE =================
             $items = collect($p->items())->map(function ($row) use ($detailRows) {
                 $pid = (int) $row->product_id;
                 $txs = $detailRows->get($pid, collect())->values();
@@ -166,6 +170,8 @@ class ReportController extends Controller
                     'product_id'        => $pid,
                     'sku'               => $row->sku,
                     'product_name'      => $row->product_name,
+                    'category_name'     => $row->category_name,
+                    'subcategory_name'  => $row->subcategory_name,
                     'qty'               => (int) $row->qty,
                     'gross'             => (float) $row->gross,
                     'last_sold_at'      => $row->last_sold_at,
