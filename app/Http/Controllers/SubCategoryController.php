@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\SubCategory;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Illuminate\Support\Facades\DB;
 
 class SubCategoryController extends Controller
 {
@@ -142,4 +143,95 @@ class SubCategoryController extends Controller
 
         return response()->json(['message' => 'SubCategory deleted']);
     }
+
+    public function reportMonthly(Request $request)
+{
+    $year = intval($request->query("year", date("Y")));
+
+    // ambil store dari request atau user login
+    $user = $request->user();
+    $storeId = $request->query('store_location_id')
+        ?? $user?->store_location_id
+        ?? optional($user?->storeLocation)->id
+        ?? null;
+
+    /* =======================
+       1. Ambil daftar tahun tersedia
+    ======================= */
+    $yearQuery = DB::table('sales')
+        ->where('status', '!=', 'void');
+
+    if ($storeId) {
+        $yearQuery->where('store_location_id', $storeId);
+    }
+
+    $availableYears = $yearQuery
+        ->selectRaw('DISTINCT YEAR(created_at) as y')
+        ->orderByDesc('y')
+        ->pluck('y')
+        ->map(fn($v) => (int)$v)
+        ->values();
+
+    // fallback kalau year tidak ada di list
+    if (!$availableYears->contains($year) && $availableYears->count()) {
+        $year = $availableYears[0];
+    }
+
+    /* =======================
+       2. Query data monthly
+    ======================= */
+    $q = DB::table('sales as s')
+        ->join('sale_items as si', 'si.sale_id', '=', 's.id')
+        ->join('products as p', 'p.id', '=', 'si.product_id')
+        ->join('sub_categories as sc', 'sc.id', '=', 'p.sub_category_id')
+        ->join('categories as c', 'c.id', '=', 'sc.category_id')
+        ->where('s.status', '!=', 'void')
+        ->whereYear('s.created_at', $year);
+
+    if ($storeId) {
+        $q->where('s.store_location_id', $storeId);
+    }
+
+    $rows = $q->selectRaw('
+            MONTH(s.created_at) as month_num,
+            c.name as category,
+            sc.name as subcategory,
+            SUM(si.qty) as products,
+            SUM(si.line_total) as revenue
+        ')
+        ->groupByRaw('month_num, c.id, c.name, sc.id, sc.name')
+        ->orderBy('month_num')
+        ->get();
+
+    /* =======================
+       3. Normalize bulan
+    ======================= */
+    $months = [
+        1=>"January",2=>"February",3=>"March",4=>"April",5=>"May",6=>"June",
+        7=>"July",8=>"August",9=>"September",10=>"October",11=>"November",12=>"December"
+    ];
+
+    $result = [];
+    foreach ($months as $m) $result[$m] = [];
+
+    foreach ($rows as $r) {
+        $result[$months[$r->month_num]][] = [
+            "category" => $r->category,
+            "subcategory" => $r->subcategory,
+            "products" => (int)$r->products,
+            "revenue" => (float)$r->revenue,
+        ];
+    }
+
+    /* =======================
+       4. Response
+    ======================= */
+    return response()->json([
+        "year" => $year,
+        "available_years" => $availableYears,
+        "store_location_id" => $storeId,
+        "data" => $result
+    ]);
+}
+
 }

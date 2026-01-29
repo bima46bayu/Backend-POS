@@ -164,7 +164,7 @@ class InventoryService
 
         // GUARD: kalau masih butuh, fail biar ketahuan (bukan silently skip)
         if ($need > $eps) {
-            throw new RuntimeException("FIFO: layer tidak cukup untuk product_id={$productId}, sisa_need={$need}");
+            throw new RuntimeException("FIFO: Stock tidak cukup untuk product={$product->name}, sisa_need={$need}");
         }
 
         return $taken;

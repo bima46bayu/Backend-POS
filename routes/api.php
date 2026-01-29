@@ -109,6 +109,7 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
         Route::get('/', [SubCategoryController::class, 'index']);
         Route::get('/{subCategory}', [SubCategoryController::class, 'show'])->whereNumber('subCategory');
     });
+    Route::get("/reports/subcategory-month", [SubCategoryController::class, "reportMonthly"]);
 
     /*
     | Products
