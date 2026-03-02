@@ -14,6 +14,7 @@ use App\Models\Product;
 use App\Models\StockLog;
 use App\Models\Discount;
 use App\Models\AdditionalCharge;
+use App\Models\RegisterSession;
 
 use Illuminate\Support\Facades\Schema;
 
@@ -99,6 +100,16 @@ class SaleController extends Controller
         $storeId = $request->input('store_location_id') ?? optional($user)->store_location_id;
         if (!$storeId) {
             abort(422, 'store_location_id wajib.');
+        }
+
+        $openRegister = RegisterSession::where('cashier_id', $user->id)
+            ->where('store_location_id', $storeId)
+            ->whereNull('closed_at')
+            ->latest('opened_at')
+            ->first();
+
+        if (!$openRegister) {
+            abort(422, 'Register belum dibuka. Silakan buka register terlebih dahulu.');
         }
 
         return DB::transaction(function () use ($request, $user, $storeId) {

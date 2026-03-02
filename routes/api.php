@@ -20,6 +20,7 @@ use App\Http\Controllers\ProductImportController;
 use App\Http\Controllers\PurchaseController;
 use App\Http\Controllers\PurchaseReceiveController;
 use App\Http\Controllers\ReportController;
+use App\Http\Controllers\RegisterSessionController;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\StockController;
 use App\Http\Controllers\StockLogController;
@@ -158,6 +159,11 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
     */
     Route::prefix('pos')->group(function () {
         Route::post('/checkout', [PosCheckoutController::class, 'checkout']);
+        Route::get('/registers/current', [RegisterSessionController::class, 'current']);
+        Route::post('/registers/open', [RegisterSessionController::class, 'open']);
+        Route::post('/registers/{id}/close', [RegisterSessionController::class, 'close'])->whereNumber('id');
+        Route::get('/registers', [RegisterSessionController::class, 'index']);
+        Route::get('/registers/{id}', [RegisterSessionController::class, 'show'])->whereNumber('id');
     });
 
     /*
