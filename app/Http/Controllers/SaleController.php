@@ -77,8 +77,13 @@ class SaleController extends Controller
         * 📄 PAGINATION
         * ============================== */
 
+        // Hard cap at 200. The list endpoint eager-loads items.product, cashier,
+        // storeLocation, and payments per row, so any larger page can exhaust
+        // the 128 MB PHP memory limit during JSON serialization
+        // (LengthAwarePaginator::toJson). Clients that need more rows must
+        // paginate.
         $perPage = (int) ($r->per_page ?? 10);
-        $perPage = max(1, min(50000, $perPage));
+        $perPage = max(1, min(200, $perPage));
 
         return response()->json(
             $q->paginate($perPage)

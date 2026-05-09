@@ -169,8 +169,8 @@ class ProductController extends Controller
         // ===============================
         // 9) Pagination
         // ===============================
-        $perPage = (int) $request->query('per_page', 10);
-        $perPage = max(1, min((int)$request->query('per_page', 100), 2000));
+        // Hard cap at 200 to avoid OOM in LengthAwarePaginator JSON serialization.
+        $perPage = max(1, min((int) $request->query('per_page', 50), 200));
 
         $p = $q->paginate($perPage)->appends($request->query());
 
