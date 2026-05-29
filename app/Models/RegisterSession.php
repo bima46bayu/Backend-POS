@@ -48,5 +48,10 @@ class RegisterSession extends Model
     {
         return $this->belongsTo(StoreLocation::class, 'store_location_id');
     }
+
+    public function cart()
+    {
+        return $this->hasOne(RegisterSessionCart::class);
+    }
 }
 

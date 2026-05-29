@@ -162,6 +162,7 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
         Route::get('/registers/current', [RegisterSessionController::class, 'current']);
         Route::post('/registers/open', [RegisterSessionController::class, 'open']);
         Route::post('/registers/{id}/close', [RegisterSessionController::class, 'close'])->whereNumber('id');
+        Route::put('/registers/{id}/cart', [RegisterSessionController::class, 'updateCart'])->whereNumber('id');
         Route::get('/registers', [RegisterSessionController::class, 'index']);
         Route::get('/registers/{id}', [RegisterSessionController::class, 'show'])->whereNumber('id');
     });

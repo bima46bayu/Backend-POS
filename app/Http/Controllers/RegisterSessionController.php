@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\RegisterSession;
+use App\Models\RegisterSessionCart;
 use App\Models\Sale;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -19,13 +20,14 @@ class RegisterSessionController extends Controller
             return response()->json(['message' => 'User does not have store location'], 422);
         }
 
-        $session = RegisterSession::where('cashier_id', $user->id)
+        $session = RegisterSession::with('cart')
+            ->where('cashier_id', $user->id)
             ->where('store_location_id', $storeId)
             ->whereNull('closed_at')
             ->latest('opened_at')
             ->first();
 
-        return response()->json($session);
+        return response()->json($this->formatSession($session));
     }
 
     public function open(Request $r)
@@ -105,6 +107,8 @@ class RegisterSessionController extends Controller
         $totals['closing_cash'] = $closingCash;
         $totals['difference'] = $closingCash - (float) $totals['expected_cash'];
 
+        $session->cart()?->delete();
+
         $session->update([
             'closing_cash'       => $closingCash,
             'note_close'         => $data['note'] ?? null,
@@ -120,10 +124,11 @@ class RegisterSessionController extends Controller
         $session->refresh();
 
         return response()->json([
-            'session'  => $session,
-            'summary'  => $summary['header'],
-            'totals'   => $totals,
-            'sales'    => $summary['sales'],
+            'session'    => $session,
+            'summary'    => $summary['header'],
+            'totals'     => $totals,
+            'sales'      => $summary['sales'],
+            'sold_items' => $summary['sold_items'],
         ]);
     }
 
@@ -160,6 +165,60 @@ class RegisterSessionController extends Controller
         );
     }
 
+    public function updateCart(Request $r, $id)
+    {
+        $user = $r->user();
+        $storeId = optional($user)->store_location_id;
+
+        if (!$storeId) {
+            return response()->json(['message' => 'User does not have store location'], 422);
+        }
+
+        $data = $r->validate([
+            'items'    => ['nullable', 'array', 'max:500'],
+            'items.*'  => ['array'],
+            'checkout' => ['nullable', 'array'],
+        ]);
+
+        $session = RegisterSession::where('id', $id)
+            ->where('cashier_id', $user->id)
+            ->where('store_location_id', $storeId)
+            ->whereNull('closed_at')
+            ->first();
+
+        if (!$session) {
+            return response()->json(['message' => 'Open register session not found'], 404);
+        }
+
+        $items = $data['items'] ?? [];
+        $checkout = $data['checkout'] ?? null;
+
+        if (empty($items) && empty($checkout)) {
+            $session->cart()?->delete();
+        } else {
+            RegisterSessionCart::updateOrCreate(
+                ['register_session_id' => $session->id],
+                ['items' => $items, 'checkout' => $checkout]
+            );
+        }
+
+        return response()->json($this->formatSession($session->fresh(['cart'])));
+    }
+
+    /** JSON for API clients: session fields + legacy `cart_data` key. */
+    protected function formatSession(?RegisterSession $session): ?array
+    {
+        if (!$session) {
+            return null;
+        }
+
+        $session->loadMissing('cart');
+        $payload = $session->toArray();
+        $payload['cart_data'] = $session->cart?->toPayload();
+
+        return $payload;
+    }
+
     public function show(Request $r, $id)
     {
         $user = $r->user();
@@ -178,10 +237,11 @@ class RegisterSessionController extends Controller
         $summary = $this->buildSummary($session, $closingAt, (bool) $session->closed_at);
 
         return response()->json([
-            'session' => $session,
-            'summary' => $summary['header'],
-            'totals'  => $summary['totals'],
-            'sales'   => $summary['sales'],
+            'session'    => $session,
+            'summary'    => $summary['header'],
+            'totals'     => $summary['totals'],
+            'sales'      => $summary['sales'],
+            'sold_items' => $summary['sold_items'],
         ]);
     }
 
@@ -253,6 +313,37 @@ class RegisterSessionController extends Controller
             ];
         })->values();
 
+        $soldItemsMap = [];
+        foreach ($completedSales as $sale) {
+            foreach ($sale->items as $it) {
+                $unitPrice = (float) ($it->net_unit_price ?? $it->unit_price ?? 0);
+                $key = $it->product_id . '@' . number_format($unitPrice, 2, '.', '');
+
+                if (!isset($soldItemsMap[$key])) {
+                    $soldItemsMap[$key] = [
+                        'product_id'   => $it->product_id,
+                        'product_name' => optional($it->product)->name ?? '-',
+                        'product_sku'  => optional($it->product)->sku ?? null,
+                        'qty'          => 0,
+                        'unit_price'   => $unitPrice,
+                        'line_total'   => 0.0,
+                    ];
+                }
+
+                $soldItemsMap[$key]['qty'] += (int) $it->qty;
+                $soldItemsMap[$key]['line_total'] += (float) ($it->line_total ?? 0);
+            }
+        }
+
+        $soldItems = collect($soldItemsMap)
+            ->map(function ($row) {
+                $row['line_total'] = round($row['line_total'], 2);
+                return $row;
+            })
+            ->sortBy('product_name', SORT_NATURAL | SORT_FLAG_CASE)
+            ->values()
+            ->all();
+
         return [
             'header' => [
                 'session_id'   => $session->id,
@@ -275,6 +366,7 @@ class RegisterSessionController extends Controller
                 'void_amount'           => $voidAmount,
             ],
             'sales' => $salesRows,
+            'sold_items' => $soldItems,
         ];
     }
 }
