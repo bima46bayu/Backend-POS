@@ -11,7 +11,6 @@ use App\Models\Sale;
 use App\Models\SaleItem;
 use App\Models\SalePayment;
 use App\Models\Product;
-use App\Models\StockLog;
 use App\Models\Discount;
 use App\Models\AdditionalCharge;
 use App\Models\RegisterSession;
@@ -22,23 +21,21 @@ use App\Services\InventoryService;
 
 class SaleController extends Controller
 {
+    use \App\Http\Controllers\Concerns\AuthorizesStoreAccess;
+
     public function index(Request $r)
     {
         $user = $r->user();
 
-        $q = Sale::with(['items.product', 'cashier', 'storeLocation', 'payments'])
-            ->latest('id');
+        // List screens (web History, mobile Riwayat) do not need line items;
+        // skipping them avoids PHP memory exhaustion on large pages.
+        $relations = $r->boolean('without_items')
+            ? ['cashier', 'storeLocation', 'payments']
+            : ['items.product', 'cashier', 'storeLocation', 'payments'];
 
-        /* ==============================
-        * 🔐 STORE FILTER (WAJIB - SEMUA ROLE)
-        * ============================== */
+        $q = Sale::with($relations)->latest('id');
 
-        if ($user && $user->store_location_id) {
-            $q->where('store_location_id', $user->store_location_id);
-        } else {
-            // safety: user tanpa store tidak boleh lihat apa pun
-            $q->whereRaw('1 = 0');
-        }
+        $this->applySaleStoreScope($q, $r);
 
         /* ==============================
         * 🔎 FILTER LAIN
@@ -107,6 +104,8 @@ class SaleController extends Controller
             abort(422, 'store_location_id wajib.');
         }
 
+        $this->authorizeStoreAccess($user, (int) $storeId);
+
         $openRegister = RegisterSession::where('cashier_id', $user->id)
             ->where('store_location_id', $storeId)
             ->whereNull('closed_at')
@@ -166,8 +165,15 @@ class SaleController extends Controller
                 $qty = (int)($row['qty'] ?? 0);
                 if ($qty < 1) abort(422, 'Qty minimal 1');
 
-                if ($product->isStockTracked() && $product->stock < $qty) {
-                    abort(422, "Stok {$product->name} tidak cukup (tersisa {$product->stock})");
+                if ($product->store_location_id !== null && (int) $product->store_location_id !== (int) $storeId) {
+                    abort(422, "Produk {$product->name} tidak tersedia di cabang ini.");
+                }
+
+                if ($product->isStockTracked()) {
+                    $available = InventoryService::sumQtyRemaining($product->id, (int) $storeId);
+                    if ($available < $qty) {
+                        abort(422, "Stok {$product->name} tidak cukup (tersisa {$available})");
+                    }
                 }
 
                 $unitPrice = (float)($row['unit_price'] ?? $product->price);
@@ -222,18 +228,6 @@ class SaleController extends Controller
                     'net_unit_price'   => round($netUnit, 2),
                     'line_total'       => round($netLine, 2),
                 ];
-
-                if ($product->isStockTracked()) {
-                    $product->decrement('stock', $qty);
-
-                    StockLog::create([
-                        'product_id'  => $product->id,
-                        'user_id'     => $user->id,
-                        'change_type' => 'out',
-                        'quantity'    => $qty,
-                        'note'        => 'sale (temp)',
-                    ]);
-                }
             }
 
             /* =====================================================
@@ -437,10 +431,6 @@ class SaleController extends Controller
                 ]);
             }
 
-            StockLog::where('note', 'sale (temp)')
-                ->where('user_id', $user->id)
-                ->update(['note' => "sale #{$sale->code}"]);
-
             return response()->json(
                 $sale->load(['items.product', 'payments', 'cashier', 'storeLocation']),
                 201
@@ -534,26 +524,7 @@ class SaleController extends Controller
                 ->whereNull('reversed_at')
                 ->update(['reversed_at' => now(), 'updated_at' => now()]);
 
-            // 5) Kembalikan counter stok produk (legacy) + log HANYA untuk produk stock
-            foreach ($sale->items as $item) {
-                $product = $item->product;
-
-                if ($product && $product->isStockTracked()) {
-                    $product->increment('stock', $item->qty);
-
-                    StockLog::create([
-                        'product_id'  => $item->product_id,
-                        'user_id'     => auth()->id(),
-                        'change_type' => 'in',
-                        'quantity'    => $item->qty,
-                        'note'        => "void sale #{$sale->code}",
-                        'created_at'  => now(),
-                        'updated_at'  => now(),
-                    ]);
-                }
-            }
-
-            // 6) Status sale
+            // 5) Status sale
             $sale->update(['status' => 'void']);
 
             return response()->json([

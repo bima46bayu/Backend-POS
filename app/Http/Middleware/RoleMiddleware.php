@@ -15,8 +15,12 @@ class RoleMiddleware
             abort(401, 'Unauthenticated');
         }
 
-        $allowed = array_map('trim', explode(',', $rolesCsv)); // contoh: "admin,kasir"
-        if (! in_array($user->role, $allowed, true)) {
+        $allowed = array_values(array_filter(array_map(
+            'trim',
+            preg_split('/[|,]/', $rolesCsv) ?: []
+        )));
+
+        if ($allowed === [] || ! in_array($user->role, $allowed, true)) {
             abort(403, 'Forbidden');
         }
 

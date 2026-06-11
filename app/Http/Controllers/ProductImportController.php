@@ -12,6 +12,7 @@ use App\Models\Product;
 use App\Models\Category;
 use App\Models\SubCategory;
 use App\Models\Unit;
+use App\Services\InventoryService;
 
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
@@ -519,25 +520,11 @@ class ProductImportController extends Controller
                 }
 
                 // ===========================
-                // RESYNC absolut products.stock
+                // RESYNC products.stock dari layers cabang import (bukan semua cabang)
                 // ===========================
                 if (Schema::hasTable('inventory_layers') && !empty($touchedIds)) {
-                    $hasRemain = Schema::hasColumn('inventory_layers','qty_remaining')
-                            || Schema::hasColumn('inventory_layers','remaining_qty')
-                            || Schema::hasColumn('inventory_layers','remaining_quantity');
-
-                    if ($hasRemain && Schema::hasColumn('products','stock')) {
-                        $remCol = Schema::hasColumn('inventory_layers','qty_remaining')      ? 'qty_remaining'
-                                : (Schema::hasColumn('inventory_layers','remaining_qty')     ? 'remaining_qty'
-                                : 'remaining_quantity');
-
-                        foreach (array_unique($touchedIds) as $pid) {
-                            $sumRemain = (float) DB::table('inventory_layers')->where('product_id', $pid)->sum($remCol);
-                            DB::table('products')->where('id', $pid)->update([
-                                'stock'      => $sumRemain,
-                                'updated_at' => now(),
-                            ]);
-                        }
+                    foreach (array_unique($touchedIds) as $pid) {
+                        InventoryService::syncLegacyProductStock((int) $pid, $storeId);
                     }
                 }
 
@@ -682,14 +669,7 @@ class ProductImportController extends Controller
             }
         }
 
-        // ===== snapshot products.stock agar UI langsung terlihat =====
-        if (Schema::hasColumn('products', 'stock')) {
-            DB::table('products')
-                ->where('id', $productId)
-                ->update([
-                    'stock'      => DB::raw('COALESCE(stock,0) + '.((float)$qty)),
-                    'updated_at' => $now,
-                ]);
-        }
+        // ===== legacy products.stock mirror (this branch only) =====
+        InventoryService::syncLegacyProductStock($productId, $storeId);
     }
 }

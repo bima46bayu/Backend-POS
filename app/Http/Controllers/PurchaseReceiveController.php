@@ -8,7 +8,6 @@ use App\Models\{
     PurchaseItem,
     GoodsReceipt,
     GoodsReceiptItem,
-    StockLog,
     Product
 };
 use Illuminate\Support\Facades\DB;
@@ -59,7 +58,9 @@ class PurchaseReceiveController extends Controller
 
         $userId = $req->user()->id;
 
-        $gr = DB::transaction(function() use ($purchase,$lines,$data,$userId) {
+        $poStoreId = $purchase->store_location_id ? (int) $purchase->store_location_id : null;
+
+        $gr = DB::transaction(function() use ($purchase,$lines,$data,$userId,$poStoreId) {
 
             $poItems = PurchaseItem::where('purchase_id',$purchase->id)
                         ->whereIn('id',$lines->pluck('purchase_item_id'))
@@ -126,32 +127,21 @@ class PurchaseReceiveController extends Controller
                 $pi->qty_received += $qty;
                 $pi->save();
 
-                // HANYA UNTUK STOCK PRODUCT
-                $product->increment('stock', $qty);
-
-                StockLog::create([
-                    'product_id'  => $pi->product_id,
-                    'user_id'     => $userId,
-                    'change_type' => 'in',
-                    'quantity'    => $qty,
-                    'note'        => "GR {$gr->gr_number} / PO {$purchase->purchase_number}",
-                ]);
-
                 app(InventoryService::class)->addInboundLayer([
                     'product_id'        => $pi->product_id,
                     'qty'               => (float)$qty,
                     'unit_buy'          => (float)$pi->unit_price,
                     'unit_tax'          => 0,
                     'unit_other_cost'   => 0,
-                    // 'store_location_id' => null,
-                    'source_type'       => 'gr',
+                    'store_location_id' => $poStoreId,
+                    'source_type'       => 'GR',
                     'source_id'         => $grItem->id,
                 ]);
 
                 if (Schema::hasTable('stock_ledger')) {
                     $layerId = DB::table('inventory_layers')
                         ->where('product_id', $pi->product_id)
-                        ->where('source_type', 'gr')
+                        ->where('source_type', 'GR')
                         ->where('source_id', $grItem->id)
                         ->orderByDesc('id')
                         ->value('id');
@@ -179,7 +169,9 @@ class PurchaseReceiveController extends Controller
 
                             DB::table('stock_ledger')->insert([
                                 'product_id'        => (int)$layer->product_id,
-                                'store_location_id' => $layer->store_location_id ? (int)$layer->store_location_id : null,
+                                'store_location_id' => $layer->store_location_id
+                                    ? (int)$layer->store_location_id
+                                    : $poStoreId,
                                 'layer_id'          => (int)$layerId,
                                 'user_id'           => $userId,
                                 'ref_type'          => 'GR',

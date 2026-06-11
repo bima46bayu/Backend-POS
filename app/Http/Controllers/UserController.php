@@ -13,96 +13,107 @@ class UserController extends Controller
      */
     public function index(Request $r)
     {
-        $q = User::query()->with('storeLocation'); // pastikan relasi ada (optional)
+        $actor = $r->user();
+        $q = User::query()->with('storeLocation');
 
-        // ==== FILTER STORE ====
-        // Terima store_location_id ATAU store_id; juga dukung string "null"
+        $q->visibleToActor($actor);
+
         if ($r->filled('store_location_id')) {
             $val = $r->input('store_location_id');
             if ($val === 'null') {
                 $q->whereNull('store_location_id');
             } else {
-                $q->where('store_location_id', (int) $val);
+                $storeId = (int) $val;
+                $this->authorizeStoreAccess($actor, $storeId);
+                $q->where('store_location_id', $storeId);
             }
         } elseif ($r->filled('store_id')) {
             $val = $r->input('store_id');
             if ($val === 'null') {
                 $q->whereNull('store_location_id');
             } else {
-                $q->where('store_location_id', (int) $val);
+                $storeId = (int) $val;
+                $this->authorizeStoreAccess($actor, $storeId);
+                $q->where('store_location_id', $storeId);
             }
         }
 
-        // ==== FILTER ROLE ====
         if ($r->filled('role')) {
             $q->where('role', strtolower($r->input('role')));
         }
 
-        // ==== FILTER SEARCH (name / email) ====
         if ($r->filled('search')) {
             $s = $r->input('search');
             $q->where(function ($qq) use ($s) {
                 $qq->where('name', 'like', "%{$s}%")
-                   ->orWhere('email', 'like', "%{$s}%");
+                    ->orWhere('email', 'like', "%{$s}%");
             });
         }
 
-        // ===== Paginate =====
         $per = max(1, min((int) $r->input('per_page', 10), 100));
         $users = $q->orderByDesc('id')->paginate($per)->appends($r->query());
 
-        // FE kamu sudah handle bentuk paginator Laravel standar (data, meta) & variasinya
         return response()->json($users);
     }
 
-    /**
-     * GET /api/users/{user}
-     */
-    public function show(User $user)
+    public function show(Request $r, User $user)
     {
-        $user->load('storeLocation')->makeHidden(['password','remember_token']);
+        if (! $r->user()->canManageUser($user) && $r->user()->id !== $user->id) {
+            abort(403, 'Forbidden');
+        }
+
+        $user->load('storeLocation')->makeHidden(['password', 'remember_token']);
+
         return $user;
     }
 
-    /**
-     * POST /api/users
-     * body: { name, email, password, role: 'admin'|'kasir', store_location_id?: number|null }
-     */
     public function store(Request $r)
     {
+        $actor = $r->user();
+
         $data = $r->validate([
-            'name'              => ['required','string','max:150'],
-            'email'             => ['required','email','max:150','unique:users,email'],
-            'password'          => ['required','string','min:8'],
-            'role'              => ['required', Rule::in(['admin','kasir'])],
-            'store_location_id' => ['nullable','exists:store_locations,id'],
+            'name'              => ['required', 'string', 'max:150'],
+            'email'             => ['required', 'email', 'max:150', 'unique:users,email'],
+            'password'          => ['required', 'string', 'min:8'],
+            'role'              => ['required', Rule::in($actor->assignableRoles())],
+            'store_location_id' => ['nullable', 'exists:store_locations,id'],
         ]);
 
-        // password akan di-hash oleh mutator di model
-        $user = User::create($data);
+        $this->validateUserStoreAssignment($actor, $data['role'], $data['store_location_id'] ?? null);
 
-        $user->load('storeLocation')->makeHidden(['password','remember_token']);
+        $user = User::create($data);
+        $user->load('storeLocation')->makeHidden(['password', 'remember_token']);
+
         return response()->json($user, 201);
     }
 
-    /**
-     * PUT/PATCH /api/users/{user}
-     * body: { name?, email?, store_location_id? }
-     */
     public function update(Request $r, User $user)
     {
+        $actor = $r->user();
+
+        if (! $actor->canManageUser($user) && $actor->id !== $user->id) {
+            abort(403, 'Forbidden');
+        }
+
         $data = $r->validate([
-            'name'              => ['sometimes','required','string','max:150'],
-            'email'             => ['sometimes','required','email','max:150', Rule::unique('users','email')->ignore($user->id)],
-            'store_location_id' => ['sometimes','nullable','exists:store_locations,id'],
-            'role'              => ['sometimes', 'required', Rule::in(['admin','kasir'])],
+            'name'              => ['sometimes', 'required', 'string', 'max:150'],
+            'email'             => ['sometimes', 'required', 'email', 'max:150', Rule::unique('users', 'email')->ignore($user->id)],
+            'store_location_id' => ['sometimes', 'nullable', 'exists:store_locations,id'],
+            'role'              => ['sometimes', 'required', Rule::in($actor->assignableRoles())],
         ]);
 
-        // Kalau request mau ubah role:
+        if (array_key_exists('role', $data) || array_key_exists('store_location_id', $data)) {
+            $role = $data['role'] ?? $user->role;
+            $storeId = array_key_exists('store_location_id', $data)
+                ? $data['store_location_id']
+                : $user->store_location_id;
+
+            $this->validateUserStoreAssignment($actor, $role, $storeId);
+        }
+
         if (array_key_exists('role', $data)) {
-            // Cegah admin terakhir hilang
-            if ($r->user()->id === $user->id && $data['role'] !== 'admin') {
-                $hasOtherAdmin = User::where('role', 'admin')
+            if ($r->user()->id === $user->id && $data['role'] !== User::ROLE_ADMIN) {
+                $hasOtherAdmin = User::where('role', User::ROLE_ADMIN)
                     ->where('id', '!=', $user->id)
                     ->exists();
 
@@ -113,76 +124,106 @@ class UserController extends Controller
         }
 
         $user->update($data);
-        $user->load('storeLocation')->makeHidden(['password','remember_token']);
+        $user->load('storeLocation')->makeHidden(['password', 'remember_token']);
 
         return $user;
     }
 
-    /**
-     * DELETE /api/users/{user}
-     * - Cegah self-delete
-     * - Revoke semua token user target
-     */
     public function destroy(Request $r, User $user)
     {
+        if (! $r->user()->canManageUser($user)) {
+            abort(403, 'Forbidden');
+        }
+
         if ($r->user()->id === $user->id) {
             return response()->json(['message' => 'You cannot delete your own account'], 422);
         }
 
-        $user->tokens()->delete(); // revoke sessions
+        $user->tokens()->delete();
         $user->delete();
+
         return response()->json(['message' => 'deleted']);
     }
 
-    /**
-     * PATCH /api/users/{user}/role
-     * body: { role: 'admin'|'kasir' }
-     * - Cegah turunkan role admin terakhir
-     */
     public function updateRole(Request $r, User $user)
     {
+        $actor = $r->user();
+
+        if (! $actor->canManageUser($user)) {
+            abort(403, 'Forbidden');
+        }
+
         $data = $r->validate([
-            'role' => ['required', Rule::in(['admin','kasir'])],
+            'role' => ['required', Rule::in($actor->assignableRoles())],
         ]);
 
-        // Jika mengubah role diri sendiri jadi bukan admin, pastikan masih ada admin lain
-        if ($r->user()->id === $user->id && $data['role'] !== 'admin') {
-            if (User::where('role','admin')->where('id','!=',$user->id)->count() === 0) {
-                return response()->json(['message'=>'At least one admin is required'], 422);
+        $this->validateUserStoreAssignment($actor, $data['role'], $user->store_location_id);
+
+        if ($r->user()->id === $user->id && $data['role'] !== User::ROLE_ADMIN) {
+            if (User::where('role', User::ROLE_ADMIN)->where('id', '!=', $user->id)->count() === 0) {
+                return response()->json(['message' => 'At least one admin is required'], 422);
             }
         }
 
         $user->update(['role' => $data['role']]);
-        $user->makeHidden(['password','remember_token']);
+        $user->makeHidden(['password', 'remember_token']);
+
         return $user;
     }
 
-    /**
-     * POST /api/users/{user}/reset-password
-     * body: { password: string (min 8) }
-     * - Mutator akan hash
-     * - Revoke semua sesi
-     */
     public function resetPassword(Request $r, User $user)
     {
+        if (! $r->user()->canManageUser($user)) {
+            abort(403, 'Forbidden');
+        }
+
         $data = $r->validate([
-            'password' => ['required','string','min:8'],
+            'password' => ['required', 'string', 'min:8'],
         ]);
 
         $user->update(['password' => $data['password']]);
-        $user->tokens()->delete(); // force logout semua sesi
+        $user->tokens()->delete();
+
         return response()->json(['message' => 'password reset']);
     }
 
-    /**
-     * GET /api/users/roles/options
-     * - Helper untuk dropdown FE
-     */
-    public function roleOptions()
+    public function roleOptions(Request $r)
     {
-        return [
-            ['value'=>'admin','label'=>'Admin'],
-            ['value'=>'kasir','label'=>'Kasir'],
+        $actor = $r->user();
+        $labels = [
+            User::ROLE_ADMIN            => 'Admin (HQ)',
+            User::ROLE_REGIONAL_MANAGER => 'Regional Manager',
+            User::ROLE_STORE_ADMIN      => 'Store Admin',
+            User::ROLE_KASIR            => 'Kasir',
         ];
+
+        return collect($actor->assignableRoles())
+            ->map(fn ($value) => ['value' => $value, 'label' => $labels[$value] ?? $value])
+            ->values()
+            ->all();
+    }
+
+    private function validateUserStoreAssignment(User $actor, string $role, $storeLocationId): void
+    {
+        if ($role === User::ROLE_ADMIN) {
+            return;
+        }
+
+        if (! $storeLocationId) {
+            abort(422, 'Store location is required for this role');
+        }
+
+        $this->authorizeStoreAccess($actor, (int) $storeLocationId);
+
+        if ($role === User::ROLE_REGIONAL_MANAGER) {
+            $store = \App\Models\StoreLocation::findOrFail((int) $storeLocationId);
+            if (! $store->isRoot()) {
+                abort(422, 'Regional manager must be assigned to a region root store');
+            }
+        }
+
+        if ($actor->isRegionalManager() && $role === User::ROLE_REGIONAL_MANAGER) {
+            abort(403, 'Forbidden');
+        }
     }
 }

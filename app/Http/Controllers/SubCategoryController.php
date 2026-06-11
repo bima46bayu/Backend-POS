@@ -13,21 +13,8 @@ class SubCategoryController extends Controller
     public function index(Request $request)
     {
         $q = SubCategory::query()->with('category');
-        $user = $request->user();
 
-        // 1) Tentukan store_location_id
-        $storeId = $request->query('store_location_id');
-
-        if (!$storeId && $user) {
-            $storeId = $user->store_location_id
-                ?? optional($user->storeLocation)->id
-                ?? null;
-        }
-
-        // 2) Filter berdasarkan store
-        if ($storeId) {
-            $q->where('store_location_id', $storeId);
-        }
+        $this->applySaleStoreScope($q, $request);
 
         // 3) Filter by category_id (untuk dependent dropdown)
         if ($request->filled('category_id')) {

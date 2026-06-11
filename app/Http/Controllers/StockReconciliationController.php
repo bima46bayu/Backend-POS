@@ -15,6 +15,24 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class StockReconciliationController extends Controller
 {
+    use \App\Http\Controllers\Concerns\AuthorizesStoreAccess;
+
+    /** Load reconciliation header and verify caller may access its store. */
+    private function authorizeReconciliation(int $id): object
+    {
+        $recon = DB::table('stock_reconciliations')->where('id', $id)->first();
+        if (! $recon) {
+            abort(404, 'Not found');
+        }
+
+        $user = request()->user();
+        if ($user) {
+            $this->authorizeStoreAccess($user, (int) $recon->store_location_id);
+        }
+
+        return $recon;
+    }
+
     /* ============================================================
      | Helpers
      * ============================================================ */
@@ -169,19 +187,44 @@ class StockReconciliationController extends Controller
      * ============================================================ */
     public function index(Request $r)
     {
+        $user = $r->user();
+        $storeId = $r->filled('store_id') ? (int) $r->input('store_id') : null;
+
+        if ($storeId !== null) {
+            $this->authorizeStoreAccess($user, $storeId);
+        }
+
         $q = DB::table('stock_reconciliations as sr')
             ->leftJoin('store_locations as sl', 'sl.id', '=', 'sr.store_location_id')
             ->leftJoin('users as u', 'u.id', '=', 'sr.created_by')
             ->select(
                 'sr.id','sr.name','sr.status','sr.store_location_id',
-                'sr.created_at','sr.applied_at',
+                'sr.created_at','sr.applied_at','sr.created_by',
                 DB::raw('COALESCE(sr.reference_code, "") as reference_code'),
                 'sr.date_from','sr.date_to',
                 DB::raw('COALESCE(sl.name, "") as store_name'),
-                DB::raw('COALESCE(u.name, "") as user_name')
+                DB::raw('COALESCE(u.name, "") as user_name'),
+                DB::raw('COALESCE(sr.total_items, 0) as total_items'),
+                DB::raw('COALESCE(sr.total_value, 0) as total_value')
             )
-            ->when($r->filled('store_id'), fn($qq)=>$qq->where('sr.store_location_id',(int)$r->input('store_id')))
+            ->when($storeId !== null, fn ($qq) => $qq->where('sr.store_location_id', $storeId))
+            ->when($storeId === null && $user && ! $user->isAdmin(), function ($qq) use ($user) {
+                $allowed = $user->allowedStoreIds() ?? [];
+                if ($allowed === []) {
+                    return $qq->whereRaw('1 = 0');
+                }
+
+                return $qq->whereIn('sr.store_location_id', $allowed);
+            })
             ->when($r->filled('status'),   fn($qq)=>$qq->where('sr.status',$r->input('status')))
+            ->when($r->filled('q'), function ($qq) use ($r) {
+                $term = '%' . trim((string) $r->input('q')) . '%';
+                $qq->where(function ($w) use ($term) {
+                    $w->where('sr.reference_code', 'like', $term)
+                      ->orWhere('sr.name', 'like', $term)
+                      ->orWhere('u.name', 'like', $term);
+                });
+            })
             ->orderByDesc('sr.id');
 
         $paginate = $r->boolean('paginate', true);
@@ -207,6 +250,8 @@ class StockReconciliationController extends Controller
 
         $now      = Carbon::now();
         $storeId  = (int)$data['store_location_id'];
+        $this->authorizeStoreAccess($r->user(), $storeId);
+
         $dateFrom = $r->input('date_from') ?: $now->toDateString();
         $dateTo   = $r->input('date_to')   ?: $now->toDateString();
         $name     = $data['name'] ?? ("Rekon Store#{$storeId} " . $now->format('Y-m-d'));
@@ -247,6 +292,13 @@ class StockReconciliationController extends Controller
             elseif (Schema::hasColumn('products','status')) $qProducts->whereIn('status', ['ACTIVE','Active','active', 1, '1']);
 
             if ($hasDeletedAt) $qProducts->whereNull('deleted_at');
+
+            if (Schema::hasColumn('products', 'store_location_id')) {
+                $qProducts->where(function ($w) use ($storeId) {
+                    $w->whereNull('store_location_id')->orWhere('store_location_id', $storeId);
+                });
+            }
+
             if ($hasName) $qProducts->orderBy('name'); else $qProducts->orderBy('id');
 
             $products = $qProducts->get();
@@ -292,8 +344,7 @@ class StockReconciliationController extends Controller
      * ============================================================ */
     public function show($id)
     {
-        $head = DB::table('stock_reconciliations')->where('id',$id)->first();
-        if (!$head) return response()->json(['message'=>'Not found'],404);
+        $head = $this->authorizeReconciliation((int) $id);
 
         $items = DB::table('stock_reconciliation_items')
             ->where('stock_reconciliation_id',$id)
@@ -319,6 +370,8 @@ class StockReconciliationController extends Controller
      * ============================================================ */
     public function bulkUpdateItems($id, Request $r)
     {
+        $this->authorizeReconciliation((int) $id);
+
         $payload = $r->validate([
             'items'                 => 'required|array|min:1',
             'items.*.id'            => 'required|integer',
@@ -352,8 +405,7 @@ class StockReconciliationController extends Controller
     public function template($id)
     {
         try {
-            $head = DB::table('stock_reconciliations')->where('id',$id)->first();
-            if (!$head) return response()->json(['message'=>'Not found'],404);
+            $head = $this->authorizeReconciliation((int) $id);
 
             $storeId   = (int) $head->store_location_id;
             $storeName = DB::table('store_locations')->where('id',$storeId)->value('name');
@@ -480,8 +532,7 @@ class StockReconciliationController extends Controller
      * ============================================================ */
     public function apply($id)
     {
-        $recon = DB::table('stock_reconciliations')->where('id', $id)->first();
-        if (!$recon) return response()->json(['message' => 'Reconciliation not found'], 404);
+        $recon = $this->authorizeReconciliation((int) $id);
         if (!empty($recon->applied_at)) return response()->json(['message' => 'Already applied'], 422);
 
         $storeId = (int) $recon->store_location_id;
@@ -688,17 +739,6 @@ class StockReconciliationController extends Controller
                         DB::table('stock_ledger')->insert($payload);
                     }
                 }
-
-                // sync stok product (global; jika mau per-store, sesuaikan)
-                if (Schema::hasTable('inventory_layers') && Schema::hasColumn('products','stock')) {
-                    $sumRemain = DB::table('inventory_layers')
-                        ->where('product_id', $productId)
-                        ->sum($qtyCol ?: 'qty_remaining');
-                    DB::table('products')->where('id', $productId)->update([
-                        'stock'      => (float)$sumRemain,
-                        'updated_at' => $now,
-                    ]);
-                }
             }
 
             // update header recon
@@ -722,8 +762,7 @@ class StockReconciliationController extends Controller
      * ============================================================ */
     public function destroy($id)
     {
-        $recon = DB::table('stock_reconciliations')->where('id', $id)->first();
-        if (!$recon) return response()->json(['message' => 'Not found'], 404);
+        $recon = $this->authorizeReconciliation((int) $id);
 
         $status = strtoupper((string)($recon->status ?? 'DRAFT'));
         if ($status !== 'DRAFT' || !empty($recon->applied_at)) {

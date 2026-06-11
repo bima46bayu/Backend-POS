@@ -70,19 +70,6 @@ class InventoryQuick
                 }
             }
 
-            // 🔁 Sync aggregate di products
-            if ($schema->hasColumn('products','stock')) {
-                DB::table('products')->where('id', $productId)->update([
-                    'stock'      => DB::raw('stock + '.$qty),
-                    'updated_at' => now(),
-                ]);
-            } elseif ($schema->hasColumn('products','stock_qty')) {
-                DB::table('products')->where('id', $productId)->update([
-                    'stock_qty'  => DB::raw('stock_qty + '.$qty),
-                    'updated_at' => now(),
-                ]);
-            }
-
             return $layerId;
         });
     }

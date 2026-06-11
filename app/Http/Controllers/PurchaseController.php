@@ -11,6 +11,8 @@ use Illuminate\Validation\ValidationException;
 
 class PurchaseController extends Controller
 {
+    use \App\Http\Controllers\Concerns\AuthorizesStoreAccess;
+
     public function index(Request $r)
     {
         $perPage = (int) ($r->per_page ?? 10);
@@ -104,7 +106,16 @@ class PurchaseController extends Controller
         $user   = $req->user();
         $userId = $user->id;
 
-        $storeLocationId = $user->store_location_id ?? $user->store_location?->id ?? null;
+        $storeLocationId = $this->resolveStoreIdFromRequest(
+            $req,
+            isset($data['store_location_id']) ? (int) $data['store_location_id'] : null
+        );
+
+        if ($storeLocationId === null) {
+            throw ValidationException::withMessages([
+                'store_location_id' => 'Store wajib dipilih untuk purchase order.',
+            ]);
+        }
 
         $po = DB::transaction(function () use ($data, $userId, $storeLocationId) {
             $po = Purchase::create([
