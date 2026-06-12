@@ -4,10 +4,9 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use App\Models\User;
-use App\Models\StoreLocation;
-use Carbon\Carbon;
 
 class AuthController extends Controller
 {
@@ -17,7 +16,7 @@ class AuthController extends Controller
             'name'              => 'required|string|max:100',
             'email'             => 'required|email|unique:users,email',
             'password'          => 'required|min:6|confirmed',
-            'role'              => 'in:admin,kasir',
+            'role'              => ['nullable', Rule::in(User::ROLES)],
             'store_location_id' => 'nullable|exists:store_locations,id',
         ]);
 
@@ -25,42 +24,34 @@ class AuthController extends Controller
             'name'              => $validated['name'],
             'email'             => $validated['email'],
             'password'          => Hash::make($validated['password']),
-            'role'              => $validated['role'] ?? 'kasir',
+            'role'              => $validated['role'] ?? User::ROLE_KASIR,
             'store_location_id' => $validated['store_location_id'] ?? null,
         ]);
 
-        $user->load('storeLocation');
-        $user->makeHidden(['password', 'remember_token']);
-
-        return response()->json(['user' => $user], 201);
+        return response()->json(['user' => $this->formatUser($user)], 201);
     }
 
     public function login(Request $request)
     {
         $request->validate([
             'email'    => 'required|email',
-            'password' => 'required'
+            'password' => 'required',
         ]);
 
         $user = User::where('email', $request->email)->first();
 
-        if (!$user || !Hash::check($request->password, $user->password)) {
+        if (! $user || ! Hash::check($request->password, $user->password)) {
             throw ValidationException::withMessages([
                 'email' => ['The provided credentials are incorrect.'],
             ]);
         }
 
-        // Hapus semua token lama user ini
         $user->tokens()->delete();
 
-        // Buat token TANPA expiry (stabil untuk POS)
         $token = $user->createToken('pos-token')->plainTextToken;
 
-        $user->load('storeLocation');
-        $user->makeHidden(['password', 'remember_token']);
-
         return response()->json([
-            'user'  => $user,
+            'user'  => $this->formatUser($user),
             'token' => $token,
         ]);
     }
@@ -68,6 +59,7 @@ class AuthController extends Controller
     public function logout(Request $request)
     {
         $request->user()->tokens()->delete();
+
         return response()->json(['message' => 'Logged out']);
     }
 
@@ -77,9 +69,7 @@ class AuthController extends Controller
      */
     public function me(Request $request)
     {
-        $u = $request->user()->load('storeLocation');
-        $u->makeHidden(['password', 'remember_token']);
-        return response()->json($u);
+        return response()->json($this->formatUser($request->user()));
     }
 
     /**
@@ -94,15 +84,33 @@ class AuthController extends Controller
         ]);
 
         $u = $request->user();
-        $u->store_location_id = $data['store_location_id'] ?? null;
-        $u->save();
+        $storeId = $data['store_location_id'] ?? null;
 
-        $u->load('storeLocation');
-        $u->makeHidden(['password', 'remember_token']);
+        if ($storeId !== null) {
+            $this->authorizeStoreAccess($u, (int) $storeId);
+        } elseif (! $u->isAdmin()) {
+            abort(422, 'Store location is required');
+        }
+
+        $u->store_location_id = $storeId;
+        $u->save();
 
         return response()->json([
             'message' => 'Store location updated',
-            'user'    => $u,
+            'user'    => $this->formatUser($u),
         ]);
+    }
+
+    private function formatUser(User $user): array
+    {
+        $user->load('storeLocation');
+        $user->makeHidden(['password', 'remember_token']);
+
+        $payload = $user->toArray();
+        $allowed = $user->allowedStoreIds();
+        $payload['allowed_store_ids'] = $allowed;
+        $payload['can_switch_store'] = $user->canSwitchStore();
+
+        return $payload;
     }
 }

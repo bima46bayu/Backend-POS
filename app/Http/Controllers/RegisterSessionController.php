@@ -11,6 +11,8 @@ use Illuminate\Support\Facades\Auth;
 
 class RegisterSessionController extends Controller
 {
+    use \App\Http\Controllers\Concerns\AuthorizesStoreAccess;
+
     public function current(Request $r)
     {
         $user = $r->user();
@@ -137,15 +139,10 @@ class RegisterSessionController extends Controller
         $user = $r->user();
         $q = RegisterSession::with(['cashier', 'storeLocation'])->latest('opened_at');
 
-        // Restrict by store: each store only sees its own sessions
-        if ($user->store_location_id) {
-            $q->where('store_location_id', $user->store_location_id);
-        } elseif ($r->filled('store_location_id')) {
-            // Only allow query filter when user has no store (e.g. super-admin)
-            $q->where('store_location_id', $r->store_location_id);
-        }
+        $this->applySaleStoreScope($q, $r);
 
-        if (!$user->isAdmin()) {
+        // Kasir only sees their own sessions; management sees all cashiers in allowed stores
+        if ($user->isKasir()) {
             $q->where('cashier_id', $user->id);
         } elseif ($r->filled('cashier_id')) {
             $q->where('cashier_id', $r->cashier_id);
@@ -225,11 +222,10 @@ class RegisterSessionController extends Controller
 
         $session = RegisterSession::with(['cashier', 'storeLocation'])->findOrFail($id);
 
-        // Each store can only view sessions for their own store
-        if ($user->store_location_id && (int) $session->store_location_id !== (int) $user->store_location_id) {
+        if (! $user->canAccessStore((int) $session->store_location_id)) {
             abort(403, 'Not allowed to view this register session');
         }
-        if (!$user->isAdmin() && $session->cashier_id !== $user->id) {
+        if ($user->isKasir() && (int) $session->cashier_id !== (int) $user->id) {
             abort(403, 'Not allowed to view this register session');
         }
 

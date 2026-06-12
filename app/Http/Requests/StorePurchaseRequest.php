@@ -9,6 +9,7 @@ class StorePurchaseRequest extends FormRequest {
   public function rules(): array {
     return [
       'supplier_id' => 'required|exists:suppliers,id',
+      'store_location_id' => 'nullable|integer|exists:store_locations,id',
       'order_date'  => 'required|date',
       'expected_date'=> 'nullable|date',
       'notes'       => 'nullable|string',

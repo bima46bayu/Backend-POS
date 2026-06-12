@@ -8,8 +8,28 @@ use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
 use App\Models\Product;
 
+use App\Http\Controllers\Concerns\AuthorizesStoreAccess;
+use App\Services\InventoryService;
+
 class InventoryController extends Controller
 {
+    use AuthorizesStoreAccess;
+
+    /** Resolve store from query + role; merge into request as store_id. */
+    private function mergeResolvedStoreId(Request $r): ?int
+    {
+        $storeId = $this->resolveStoreIdFromRequest(
+            $r,
+            $r->filled('store_id') ? (int) $r->input('store_id') : null
+        );
+
+        if ($storeId !== null && ! $r->filled('store_id')) {
+            $r->merge(['store_id' => $storeId]);
+        }
+
+        return $storeId;
+    }
+
     /** Normalisasi arah (dir) sesuai skema baru */
     private function normDir(string $refType = null, $direction = null): int
     {
@@ -85,6 +105,8 @@ class InventoryController extends Controller
      */
     public function layers(Request $r)
     {
+        $this->mergeResolvedStoreId($r);
+
         if (!Schema::hasTable('inventory_layers')) {
             return response()->json([
                 'items' => [], 'meta' => ['current_page'=>1,'per_page'=>0,'last_page'=>1,'total'=>0], 'links' => []
@@ -168,6 +190,8 @@ class InventoryController extends Controller
      */
     public function consumptions(Request $r)
     {
+        $this->mergeResolvedStoreId($r);
+
         if (!Schema::hasTable('inventory_consumptions')) {
             return response()->json([
                 'items' => [], 'meta' => ['current_page'=>1,'per_page'=>0,'last_page'=>1,'total'=>0], 'links' => []
@@ -182,6 +206,7 @@ class InventoryController extends Controller
             )
             ->when($r->filled('product_id'), fn($qq) => $qq->where('ic.product_id', $r->product_id))
             ->when($r->filled('sale_id'),    fn($qq) => $qq->where('ic.sale_id', $r->sale_id))
+            ->when($r->filled('store_id'),   fn($qq) => $qq->where('ic.store_location_id', (int) $r->store_id))
             ->orderByDesc('ic.id');
 
         $per = max(1, min(200, (int)($r->per_page ?? 50)));
@@ -194,6 +219,8 @@ class InventoryController extends Controller
      */
     public function valuation(Request $r)
     {
+        $this->mergeResolvedStoreId($r);
+
         if (!Schema::hasTable('inventory_layers')) {
             return response()->json([
                 'items' => [], 'meta' => ['current_page'=>1,'per_page'=>0,'last_page'=>1,'total'=>0], 'links' => []
@@ -222,27 +249,61 @@ class InventoryController extends Controller
      */
     public function inventoryProducts(Request $r)
     {
-        $q = DB::table('products')
-            ->select('id','sku','name','price','stock','updated_at')
-            ->when($r->filled('search'), function($qq) use ($r) {
+        $storeId = $this->mergeResolvedStoreId($r);
+        $user = $r->user();
+
+        $q = Product::query();
+
+        if ($storeId) {
+            $q->where(function ($w) use ($storeId) {
+                $w->whereNull('store_location_id')
+                    ->orWhere('store_location_id', $storeId);
+            });
+        } elseif ($user && ! $user->isAdmin()) {
+            $this->scopeQueryToAllowedStores($q, $user, 'store_location_id');
+        }
+
+        $select = [
+            'products.id',
+            'products.sku',
+            'products.name',
+            'products.price',
+            'products.updated_at',
+            'products.inventory_type',
+            'products.store_location_id',
+        ];
+
+        if ($storeId && Schema::hasTable('inventory_layers')) {
+            $select[] = DB::raw(
+                '(SELECT COALESCE(SUM(il.qty_remaining),0) FROM inventory_layers il '
+                .'WHERE il.product_id = products.id AND il.store_location_id = '.(int) $storeId.') as stock'
+            );
+        } else {
+            $select[] = 'products.stock';
+        }
+
+        $q->select($select)
+            ->when($r->filled('search'), function ($qq) use ($r) {
                 $s = $r->input('search');
-                $qq->where(function($w) use ($s) {
-                    $w->where('name','like',"%$s%")->orWhere('sku','like',"%$s%");
+                $qq->where(function ($w) use ($s) {
+                    $w->where('products.name', 'like', "%{$s}%")
+                        ->orWhere('products.sku', 'like', "%{$s}%");
                 });
             })
-            ->orderBy('updated_at','desc');
+            ->orderByDesc('products.updated_at');
 
-        $p = $q->paginate(min(max((int)$r->input('per_page',20),1),100))->appends($r->query());
+        $p = $q->paginate(min(max((int) $r->input('per_page', 20), 1), 100))->appends($r->query());
 
         return response()->json([
-            'items'=>$p->items(),
-            'meta'=>[
-                'current_page'=>$p->currentPage(),
-                'per_page'=>$p->perPage(),
-                'last_page'=>$p->lastPage(),
-                'total'=>$p->total()
+            'items' => $p->items(),
+            'meta'  => [
+                'current_page' => $p->currentPage(),
+                'per_page'     => $p->perPage(),
+                'last_page'    => $p->lastPage(),
+                'total'        => $p->total(),
+                'store_id'     => $storeId,
             ],
-            'links'=>['next'=>$p->nextPageUrl(),'prev'=>$p->previousPageUrl()],
+            'links' => ['next' => $p->nextPageUrl(), 'prev' => $p->previousPageUrl()],
         ]);
     }
 
@@ -252,6 +313,8 @@ class InventoryController extends Controller
      */
     public function productLogs($productId, Request $r)
     {
+        $this->mergeResolvedStoreId($r);
+
         if (!Schema::hasTable('stock_ledger')) {
             return response()->json([
                 'items' => [],
@@ -388,7 +451,7 @@ class InventoryController extends Controller
 
         $avgSalePrice = $qtyOutSale > 0 ? $grossRevenue / $qtyOutSale : null;
 
-        $endingStock = (int)DB::table('products')->where('id',$productId)->value('stock');
+        $endingStock = (int) InventoryService::sumQtyRemaining($productId, $storeId);
 
         return [
             'product_id' => $productId,
@@ -462,7 +525,7 @@ class InventoryController extends Controller
     $avgSalePrice = $qtyOutSale > 0 ? $grossRevenue / $qtyOutSale : null;
     $avgCost      = $qtyOutSale > 0 ? $cogs / $qtyOutSale : null;
 
-    $endingStock = (int)DB::table('products')->where('id',$productId)->value('stock');
+    $endingStock = (int) InventoryService::sumQtyRemaining($productId, $storeId);
 
     $costIn = (float) DB::table('stock_ledger')
         ->where('product_id', $productId)
@@ -524,6 +587,8 @@ class InventoryController extends Controller
     public function productSummaryBatch(Request $r)
     {
         try {
+            $this->mergeResolvedStoreId($r);
+
             $v = Validator::make($r->all(), [
                 'product_ids' => ['required'], // string "1,2,3" atau array
                 'date_from'   => ['nullable', 'date'],
@@ -601,6 +666,7 @@ class InventoryController extends Controller
 
     public function productSummary($productId, Request $r)
     {
+        $this->mergeResolvedStoreId($r);
         $row = $this->buildProductSummaryArray((int)$productId, $r);
         return response()->json($row);
     }

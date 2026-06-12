@@ -24,17 +24,84 @@ class ReportController extends Controller
         $to   = $dateTo   ? $dateTo   . ' 23:59:59' : null;
 
         $user = $r->user();
-        $role = strtolower($user->role ?? '');
-        $userStoreId = $user->store_location_id ?? ($user->store_location->id ?? null);
+        $userStoreId = $user->store_location_id ?? ($user->storeLocation->id ?? null);
 
-        if ($role === 'admin') {
+        if ($user->isAdmin()) {
             $effectiveStoreId = $allStores ? null : ($storeIdReq ?? $userStoreId);
-        } else {
-            if (!$userStoreId) {
+        } elseif ($user->isRegionalManager()) {
+            if ($allStores) {
+                $allowed = $user->allowedStoreIds() ?? [];
+                $effectiveStoreId = null;
+                // Filter to allowed stores below via whereIn when needed
+            } elseif ($storeIdReq) {
+                if (! $user->canAccessStore($storeIdReq)) {
+                    abort(403, 'Store access denied');
+                }
+                $effectiveStoreId = $storeIdReq;
+            } elseif ($userStoreId) {
+                $effectiveStoreId = (int) $userStoreId;
+            } else {
                 return response()->json(['message' => 'User has no store assigned.'], 422);
             }
-            $effectiveStoreId = (int) $userStoreId;
+        } else {
+            if (! $userStoreId) {
+                return response()->json(['message' => 'User has no store assigned.'], 422);
+            }
+            if ($storeIdReq && ! $user->canAccessStore($storeIdReq)) {
+                abort(403, 'Store access denied');
+            }
+            $effectiveStoreId = $storeIdReq ? (int) $storeIdReq : (int) $userStoreId;
         }
+
+        $allowedStoreIds = $user->allowedStoreIds();
+
+        $applyStoreScope = function ($q) use ($effectiveStoreId, $allowedStoreIds) {
+            if ($effectiveStoreId !== null) {
+                $ors = [];
+                if (Schema::hasColumn('sales', 'store_location_id')) {
+                    $ors[] = ['s', 'store_location_id'];
+                }
+                if (Schema::hasColumn('users', 'store_location_id')) {
+                    $ors[] = ['u', 'store_location_id'];
+                }
+                if (Schema::hasColumn('products', 'store_location_id')) {
+                    $ors[] = ['p', 'store_location_id'];
+                }
+                if (empty($ors)) {
+                    return $q;
+                }
+
+                return $q->where(function ($w) use ($ors, $effectiveStoreId) {
+                    foreach ($ors as [$alias, $col]) {
+                        $w->orWhere("$alias.$col", '=', $effectiveStoreId);
+                    }
+                });
+            }
+
+            if (is_array($allowedStoreIds) && $allowedStoreIds !== []) {
+                $ors = [];
+                if (Schema::hasColumn('sales', 'store_location_id')) {
+                    $ors[] = ['s', 'store_location_id'];
+                }
+                if (Schema::hasColumn('users', 'store_location_id')) {
+                    $ors[] = ['u', 'store_location_id'];
+                }
+                if (Schema::hasColumn('products', 'store_location_id')) {
+                    $ors[] = ['p', 'store_location_id'];
+                }
+                if (empty($ors)) {
+                    return $q;
+                }
+
+                return $q->where(function ($w) use ($ors, $allowedStoreIds) {
+                    foreach ($ors as [$alias, $col]) {
+                        $w->orWhereIn("$alias.$col", $allowedStoreIds);
+                    }
+                });
+            }
+
+            return $q;
+        };
 
         try {
             // ================= BASE QUERY =================
@@ -47,19 +114,7 @@ class ReportController extends Controller
                 ->leftJoin('sale_payments as sp', 'sp.sale_id', '=', 's.id')
                 ->when($from, fn($q) => $q->where('s.created_at', '>=', $from))
                 ->when($to, fn($q) => $q->where('s.created_at', '<=', $to))
-                ->when($effectiveStoreId !== null, function ($q) use ($effectiveStoreId) {
-                    $ors = [];
-                    if (Schema::hasColumn('sales', 'store_location_id'))   $ors[] = ['s','store_location_id'];
-                    if (Schema::hasColumn('users', 'store_location_id'))   $ors[] = ['u','store_location_id'];
-                    if (Schema::hasColumn('products','store_location_id')) $ors[] = ['p','store_location_id'];
-                    if (empty($ors)) return $q;
-
-                    return $q->where(function ($w) use ($ors, $effectiveStoreId) {
-                        foreach ($ors as [$alias, $col]) {
-                            $w->orWhere("$alias.$col", '=', $effectiveStoreId);
-                        }
-                    });
-                })
+                ->when(true, $applyStoreScope)
                 ->when($paymentMethod !== null && $paymentMethod !== '', function ($q) use ($paymentMethod) {
                     return $q->where('sp.method', $paymentMethod);
                 })
@@ -124,19 +179,7 @@ class ReportController extends Controller
                 ->whereIn('si.product_id', $productIds)
                 ->when($from, fn($q) => $q->where('s.created_at', '>=', $from))
                 ->when($to, fn($q) => $q->where('s.created_at', '<=', $to))
-                ->when($effectiveStoreId !== null, function ($q) use ($effectiveStoreId) {
-                    $ors = [];
-                    if (Schema::hasColumn('sales', 'store_location_id'))   $ors[] = ['s','store_location_id'];
-                    if (Schema::hasColumn('users', 'store_location_id'))   $ors[] = ['u','store_location_id'];
-                    if (Schema::hasColumn('products','store_location_id')) $ors[] = ['p','store_location_id'];
-                    if (empty($ors)) return $q;
-
-                    return $q->where(function ($w) use ($ors, $effectiveStoreId) {
-                        foreach ($ors as [$alias, $col]) {
-                            $w->orWhere("$alias.$col", '=', $effectiveStoreId);
-                        }
-                    });
-                })
+                ->when(true, $applyStoreScope)
                 ->when($paymentMethod !== null && $paymentMethod !== '', fn($q) => $q->where('sp.method', $paymentMethod))
                 ->when($term !== '', function ($qq) use ($term) {
                     $like = '%' . mb_strtolower($term) . '%';

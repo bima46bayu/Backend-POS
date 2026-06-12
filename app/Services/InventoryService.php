@@ -3,11 +3,76 @@
 namespace App\Services;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use RuntimeException;
 use App\Models\Product;
 
 class InventoryService
 {
+    /** Sum qty_remaining from layers (optionally per store). */
+    public static function sumQtyRemaining(int $productId, ?int $storeId = null): float
+    {
+        if (! Schema::hasTable('inventory_layers')) {
+            return (float) (Product::find($productId)?->stock ?? 0);
+        }
+
+        $q = DB::table('inventory_layers')->where('product_id', $productId);
+        if ($storeId !== null) {
+            $q->where('store_location_id', $storeId);
+        }
+
+        return (float) $q->sum('qty_remaining');
+    }
+
+    /**
+     * Mirror one branch's layer qty into legacy products.stock (optional fallback column).
+     * Skips when storeId is null — never writes a cross-store total into products.stock.
+     */
+    public static function syncLegacyProductStock(int $productId, ?int $storeId): void
+    {
+        if (! Schema::hasColumn('products', 'stock')) {
+            return;
+        }
+
+        $product = Product::find($productId);
+        if (! $product) {
+            return;
+        }
+
+        if (! $product->isStockTracked()) {
+            DB::table('products')->where('id', $productId)->update([
+                'stock'      => 0,
+                'updated_at' => now(),
+            ]);
+
+            return;
+        }
+
+        if ($storeId === null) {
+            return;
+        }
+
+        DB::table('products')->where('id', $productId)->update([
+            'stock'      => (int) self::sumQtyRemaining($productId, $storeId),
+            'updated_at' => now(),
+        ]);
+    }
+
+    /** Stock for API display: layers when store scoped, else legacy column (non-stock → 0). */
+    public static function displayStock(int $productId, ?int $storeId, ?Product $product = null): float
+    {
+        $product ??= Product::find($productId);
+        if ($product && ! $product->isStockTracked()) {
+            return 0.0;
+        }
+
+        if ($storeId !== null && Schema::hasTable('inventory_layers')) {
+            return self::sumQtyRemaining($productId, $storeId);
+        }
+
+        return (float) ($product?->stock ?? 0);
+    }
+
     /**
      * Dipanggil saat GR: buat satu layer FIFO dengan harga beli (landed sederhana).
      */
@@ -35,10 +100,12 @@ class InventoryService
         $unitOther = (float)($p['unit_other_cost'] ?? 0);
         $landed    = $unitBuy + $unitTax + $unitOther;
 
+        $sourceType = strtoupper((string) ($p['source_type'] ?? 'GR'));
+
         DB::table('inventory_layers')->insert([
             'product_id'        => $productId,
             'store_location_id' => $p['store_location_id'] ?? null,
-            'source_type'       => 'GR',
+            'source_type'       => $sourceType,
             'source_id'         => $p['source_id'] ?? null,
             'unit_price'        => $unitBuy,
             'unit_tax'          => $unitTax,
@@ -78,32 +145,30 @@ class InventoryService
             return [];
         }
 
-        // MULAI: logika lama untuk produk stock
-        // helper: ambil layer tertua yg masih ada qty
-        $nextLayer = function (bool $withStore) use ($productId, $storeId) {
-            $q = DB::table('inventory_layers')
+        if ($storeId === null) {
+            throw new RuntimeException("FIFO: store_location_id wajib untuk product={$product->name}");
+        }
+
+        $taken = [];
+        while ($need > $eps) {
+            $layer = DB::table('inventory_layers')
                 ->where('product_id', $productId)
+                ->where('store_location_id', $storeId)
                 ->where('qty_remaining', '>', 0)
                 ->orderBy('created_at')
                 ->orderBy('id')
-                ->lockForUpdate();
-            if ($withStore && !is_null($storeId)) {
-                $q->where('store_location_id', $storeId);
+                ->lockForUpdate()
+                ->first();
+
+            if (! $layer) {
+                break;
             }
-            return $q->first();
-        };
 
-        $taken = [];
-        // 1) coba pakai filter store (jika ada)
-        while ($need > $eps) {
-            $layer = $nextLayer(true);
-            if (!$layer) break;
-
-            $take = min($need, (float)$layer->qty_remaining);
+            $take = min($need, (float) $layer->qty_remaining);
 
             DB::table('inventory_consumptions')->insert([
                 'product_id'        => $productId,
-                'store_location_id' => $storeId, // simpan sesuai sale
+                'store_location_id' => $storeId,
                 'sale_id'           => $saleId,
                 'sale_item_id'      => $saleItemId,
                 'layer_id'          => $layer->id,
@@ -114,57 +179,24 @@ class InventoryService
             ]);
 
             DB::table('inventory_layers')->where('id', $layer->id)->update([
-                'qty_remaining' => DB::raw('qty_remaining - '.(float)$take),
+                'qty_remaining' => DB::raw('qty_remaining - '.(float) $take),
                 'updated_at'    => now(),
             ]);
 
             $taken[] = [
                 'layer_id'        => $layer->id,
                 'qty'             => $take,
-                'unit_cost'       => (float)$layer->unit_landed_cost,
+                'unit_cost'       => (float) $layer->unit_landed_cost,
                 'unit_sale_price' => $saleUnit,
             ];
 
             $need -= $take;
         }
 
-        // 2) fallback tanpa filter store
-        while ($need > $eps) {
-            $layer = $nextLayer(false);
-            if (!$layer) break;
-
-            $take = min($need, (float)$layer->qty_remaining);
-
-            DB::table('inventory_consumptions')->insert([
-                'product_id'        => $productId,
-                'store_location_id' => $storeId, // tetap simpan store dari sale
-                'sale_id'           => $saleId,
-                'sale_item_id'      => $saleItemId,
-                'layer_id'          => $layer->id,
-                'qty'               => $take,
-                'unit_cost'         => $layer->unit_landed_cost,
-                'created_at'        => now(),
-                'updated_at'        => now(),
-            ]);
-
-            DB::table('inventory_layers')->where('id', $layer->id)->update([
-                'qty_remaining' => DB::raw('qty_remaining - '.(float)$take),
-                'updated_at'    => now(),
-            ]);
-
-            $taken[] = [
-                'layer_id'        => $layer->id,
-                'qty'             => $take,
-                'unit_cost'       => (float)$layer->unit_landed_cost,
-                'unit_sale_price' => $saleUnit,
-            ];
-
-            $need -= $take;
-        }
-
-        // GUARD: kalau masih butuh, fail biar ketahuan (bukan silently skip)
         if ($need > $eps) {
-            throw new RuntimeException("FIFO: Stock tidak cukup untuk product={$product->name}, sisa_need={$need}");
+            throw new RuntimeException(
+                "FIFO: Stok cabang tidak cukup untuk product={$product->name}, sisa_need={$need}"
+            );
         }
 
         return $taken;

@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\File;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\UploadedFile;
+use App\Services\InventoryService;
 
 class ProductController extends Controller
 {
@@ -61,33 +62,30 @@ class ProductController extends Controller
      */
     public function index(Request $request)
     {
-        $q = Product::query();
+        $q = Product::query()->with('storeLocation:id,name');
 
         // ===============================
-        // 1) Ambil user & store_location_id
+        // 1) Role-based store scope
         // ===============================
         $user = $request->user();
+        $this->applyProductStoreScope($q, $request);
 
-        $storeId = $request->query('store_location_id');
-
-        if (!$storeId && $user) {
-            $storeId = $user->store_location_id
-                ?? optional($user->storeLocation)->id
-                ?? optional($user->store)->id
-                ?? null;
+        $storeId = null;
+        if ($request->filled('store_location_id')) {
+            $storeId = (int) $request->input('store_location_id');
+        } elseif ($request->filled('store_id')) {
+            $storeId = (int) $request->input('store_id');
+        } elseif ($user && ! $user->isAdmin()) {
+            $allowed = $user->allowedStoreIds() ?? [];
+            if (count($allowed) === 1) {
+                $storeId = $allowed[0];
+            }
         }
 
         // ===============================
-        // 2) Filter store
+        // 2) Select fields (+ per-store stock when scoped to one store)
         // ===============================
-        if ($storeId) {
-            $q->where('products.store_location_id', $storeId);
-        }
-
-        // ===============================
-        // 3) Select fields
-        // ===============================
-        $q->select([
+        $select = [
             'products.id',
             'products.category_id',
             'products.sub_category_id',
@@ -95,7 +93,6 @@ class ProductController extends Controller
             'products.name',
             'products.description',
             'products.price',
-            'products.stock',
             'products.image_url',
             'products.store_location_id',
             'products.created_by',
@@ -104,7 +101,18 @@ class ProductController extends Controller
             'products.unit_id',
             'products.inventory_type',
             DB::raw('(SELECT name FROM units WHERE units.id = products.unit_id LIMIT 1) AS unit_name'),
-        ]);
+        ];
+
+        if ($storeId && Schema::hasTable('inventory_layers')) {
+            $select[] = DB::raw(
+                '(SELECT COALESCE(SUM(il.qty_remaining),0) FROM inventory_layers il '
+                .'WHERE il.product_id = products.id AND il.store_location_id = '.(int) $storeId.') as stock'
+            );
+        } else {
+            $select[] = 'products.stock';
+        }
+
+        $q->select($select);
 
         // ===============================
         // 4) Search
@@ -156,7 +164,7 @@ class ProductController extends Controller
         // ===============================
         // 8) Sorting
         // ===============================
-        $allowedSorts = ['id','name','sku','price','updated_at','created_at'];
+        $allowedSorts = ['id','name','sku','price','stock','updated_at','created_at'];
         $sort = $request->query('sort', 'id');
         $dir  = strtolower($request->query('dir', 'asc')) === 'desc' ? 'desc' : 'asc';
 
@@ -224,17 +232,19 @@ class ProductController extends Controller
 
                 // 2) Tentukan store_location_id berdasarkan role
                 $storeLocationId = null;
-                if ($user->role !== 'admin') {
-                    // staff/kasir → kunci ke tokonya
-                    $storeLocationId = $user->store_location_id;
-                } else {
-                    // admin → boleh global/store
+                if ($user->isAdmin()) {
                     $scope = $data['scope'] ?? null;
                     if ($scope === 'global') {
-                        $storeLocationId = null; // global
+                        $storeLocationId = null;
                     } else {
                         $storeLocationId = $data['store_location_id'] ?? null;
                     }
+                } else {
+                    $requestedStore = $data['store_location_id'] ?? $user->store_location_id;
+                    if (! $user->canAccessStore($requestedStore ? (int) $requestedStore : null)) {
+                        abort(403, 'Store access denied');
+                    }
+                    $storeLocationId = $requestedStore ? (int) $requestedStore : null;
                 }
 
                 // 2b) Tentukan unit_id (default dari database jika tidak dikirim)
@@ -329,15 +339,8 @@ class ProductController extends Controller
                         ]);
                     }
 
-                    // 5) Sinkronkan kolom stock dari layers (hanya meaningful kalau tipe stock)
-                    $sumRemain = (float) DB::table('inventory_layers')
-                        ->where('product_id', $productId)
-                        ->sum('qty_remaining');
-
-                    DB::table('products')->where('id', $productId)->update([
-                        'stock'      => $sumRemain,
-                        'updated_at' => now(),
-                    ]);
+                    // 5) Legacy column: mirror this branch only (layers = source of truth)
+                    InventoryService::syncLegacyProductStock($productId, $storeLocationId);
                 }
 
                 // untuk produk non-stock, stock tetap 0. POS akan anggap unlimited dari inventory_type di FE.
@@ -356,12 +359,15 @@ class ProductController extends Controller
         }
     }
 
-    public function show(Product $product)
+    public function show(Request $request, Product $product)
     {
-        // kalau mau sekaligus unit_name di FE:
         $product->load('unit');
 
-        return response()->json($product);
+        $storeId = $this->resolveStoreIdFromRequest($request);
+        $payload = $product->toArray();
+        $payload['stock'] = (int) InventoryService::displayStock($product->id, $storeId, $product);
+
+        return response()->json($payload);
     }
 
     public function update(UpdateProductRequest $request, Product $product)
@@ -386,13 +392,11 @@ class ProductController extends Controller
         }
 
         // Aturan update admin vs non-admin
-        if ($user->role !== 'admin') {
-            // non-admin hanya boleh edit produk dari store-nya sendiri
-            if (empty($product->store_location_id) || $product->store_location_id !== $user->store_location_id) {
+        if (! $user->isAdmin()) {
+            if (empty($product->store_location_id) || ! $user->canAccessStore((int) $product->store_location_id)) {
                 return response()->json(['message' => 'Forbidden'], 403);
             }
 
-            // non-admin tidak boleh mengubah store/scope
             unset($data['store_location_id'], $data['scope']);
         } else {
             // admin: boleh pakai scope=global, kalau tidak → biarkan store_location_id sekarang
@@ -408,6 +412,16 @@ class ProductController extends Controller
         // Di UPDATE:
         // - inventory_type boleh diubah (misal dari stock -> service) kalau kamu buka di form.
         // - kalau mau batasi non-admin tidak boleh ganti inventory_type, tinggal unset di blok di atas.
+
+        // Stok fisik hanya lewat inventory_layers (GR / opname / import). Jangan tulis dari form edit.
+        unset($data['stock']);
+
+        if (
+            isset($data['inventory_type'])
+            && $data['inventory_type'] === Product::INVENTORY_TYPE_NON_STOCK
+        ) {
+            $data['stock'] = 0;
+        }
 
         $product->fill($data);
         $product->save();

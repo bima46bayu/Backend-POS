@@ -74,11 +74,14 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
     */
     Route::prefix('store-locations')->group(function () {
         Route::get('/', [StoreLocationController::class, 'index']);
-        Route::post('/', [StoreLocationController::class, 'store']);
         Route::get('/{id}', [StoreLocationController::class, 'show'])->whereNumber('id');
-        Route::put('/{id}', [StoreLocationController::class, 'update'])->whereNumber('id');
-        Route::delete('/{id}', [StoreLocationController::class, 'destroy'])->whereNumber('id');
-        Route::post('/{id}/logo', [StoreLocationController::class, 'uploadLogo'])->whereNumber('id');
+
+        Route::middleware('role:admin|regional_manager|store_admin')->group(function () {
+            Route::post('/', [StoreLocationController::class, 'store']);
+            Route::put('/{id}', [StoreLocationController::class, 'update'])->whereNumber('id');
+            Route::delete('/{id}', [StoreLocationController::class, 'destroy'])->whereNumber('id');
+            Route::post('/{id}/logo', [StoreLocationController::class, 'uploadLogo'])->whereNumber('id');
+        });
     });
 
     /*
@@ -185,7 +188,7 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
     | STAFF (admin + kasir)
     |--------------------------------------------------------------------------
     */
-    Route::middleware('role:admin,kasir')->group(function () {
+    Route::middleware('role:admin|regional_manager|store_admin|kasir')->group(function () {
 
         Route::prefix('purchases')->group(function () {
             Route::get('/', [PurchaseController::class, 'index']);
@@ -205,7 +208,7 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
     | ADMIN ONLY
     |--------------------------------------------------------------------------
     */
-    Route::middleware('role:admin')->group(function () {
+    Route::middleware('role:admin|regional_manager|store_admin')->group(function () {
 
         Route::prefix('purchases')->group(function () {
             Route::post('/{purchase}/approve', [PurchaseController::class, 'approve'])->whereNumber('purchase');
@@ -250,13 +253,13 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
 
         Route::prefix('users')->group(function () {
             Route::get('/', [UserController::class, 'index']);
+            Route::get('/roles/options', [UserController::class, 'roleOptions']);
             Route::get('/{user}', [UserController::class, 'show'])->whereNumber('user');
             Route::post('/', [UserController::class, 'store']);
             Route::match(['put','patch'], '/{user}', [UserController::class, 'update'])->whereNumber('user');
             Route::delete('/{user}', [UserController::class, 'destroy'])->whereNumber('user');
             Route::patch('/{user}/role', [UserController::class, 'updateRole'])->whereNumber('user');
             Route::post('/{user}/reset-password', [UserController::class, 'resetPassword'])->whereNumber('user');
-            Route::get('/roles/options', [UserController::class, 'roleOptions']);
         });
 
         Route::prefix('stock-reconciliation')->group(function () {
