@@ -16,11 +16,7 @@ class RegisterSessionController extends Controller
     public function current(Request $r)
     {
         $user = $r->user();
-        $storeId = optional($user)->store_location_id;
-
-        if (!$storeId) {
-            return response()->json(['message' => 'User does not have store location'], 422);
-        }
+        $storeId = $this->resolveRegisterStoreId($r);
 
         $session = RegisterSession::with('cart')
             ->where('cashier_id', $user->id)
@@ -35,15 +31,13 @@ class RegisterSessionController extends Controller
     public function open(Request $r)
     {
         $user = $r->user();
-        $storeId = optional($user)->store_location_id;
-
-        if (!$storeId) {
-            return response()->json(['message' => 'User does not have store location'], 422);
-        }
+        $storeId = $this->resolveRegisterStoreId($r);
 
         $data = $r->validate([
             'opening_cash' => ['required', 'numeric', 'min:0'],
             'note'         => ['nullable', 'string'],
+            'store_location_id' => ['nullable', 'integer'],
+            'store_id'          => ['nullable', 'integer'],
         ]);
 
         $exists = RegisterSession::where('cashier_id', $user->id)
@@ -74,11 +68,6 @@ class RegisterSessionController extends Controller
     public function close(Request $r, $id)
     {
         $user = $r->user();
-        $storeId = optional($user)->store_location_id;
-
-        if (!$storeId) {
-            return response()->json(['message' => 'User does not have store location'], 422);
-        }
 
         $data = $r->validate([
             'closing_cash' => ['nullable', 'numeric', 'min:0'],
@@ -87,11 +76,10 @@ class RegisterSessionController extends Controller
 
         $session = RegisterSession::where('id', $id)
             ->where('cashier_id', $user->id)
-            ->where('store_location_id', $storeId)
             ->whereNull('closed_at')
             ->first();
 
-        if (!$session) {
+        if (! $session || ! $user->canAccessStore((int) $session->store_location_id)) {
             return response()->json(['message' => 'Open register session not found'], 404);
         }
 
@@ -165,11 +153,6 @@ class RegisterSessionController extends Controller
     public function updateCart(Request $r, $id)
     {
         $user = $r->user();
-        $storeId = optional($user)->store_location_id;
-
-        if (!$storeId) {
-            return response()->json(['message' => 'User does not have store location'], 422);
-        }
 
         $data = $r->validate([
             'items'    => ['nullable', 'array', 'max:500'],
@@ -179,11 +162,10 @@ class RegisterSessionController extends Controller
 
         $session = RegisterSession::where('id', $id)
             ->where('cashier_id', $user->id)
-            ->where('store_location_id', $storeId)
             ->whereNull('closed_at')
             ->first();
 
-        if (!$session) {
+        if (! $session || ! $user->canAccessStore((int) $session->store_location_id)) {
             return response()->json(['message' => 'Open register session not found'], 404);
         }
 
@@ -364,6 +346,34 @@ class RegisterSessionController extends Controller
             'sales' => $salesRows,
             'sold_items' => $soldItems,
         ];
+    }
+
+    /**
+     * Resolve POS register store: explicit store_id/store_location_id for admins,
+     * otherwise the user's assigned branch.
+     */
+    protected function resolveRegisterStoreId(Request $r): int
+    {
+        $user = $r->user();
+        $storeId = null;
+
+        if ($r->filled('store_location_id')) {
+            $storeId = (int) $r->input('store_location_id');
+        } elseif ($r->filled('store_id')) {
+            $storeId = (int) $r->input('store_id');
+        }
+
+        if ($storeId !== null) {
+            $this->authorizeStoreAccess($user, $storeId);
+
+            return $storeId;
+        }
+
+        if ($user->store_location_id) {
+            return (int) $user->store_location_id;
+        }
+
+        abort(422, 'Store location is required. Pilih cabang terlebih dahulu.');
     }
 }
 

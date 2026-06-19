@@ -161,6 +161,22 @@ class ProductController extends Controller
             $q->where('products.inventory_type', $invType);
         }
 
+        // POS: hide raw materials that are only consumed via recipes at this branch
+        if (
+            $request->boolean('exclude_recipe_ingredients')
+            && $storeId
+            && Schema::hasTable('product_recipe_items')
+            && Schema::hasTable('product_recipes')
+        ) {
+            $q->whereNotIn('products.id', function ($sub) use ($storeId) {
+                $sub->select('pri.ingredient_product_id')
+                    ->from('product_recipe_items as pri')
+                    ->join('product_recipes as pr', 'pr.id', '=', 'pri.recipe_id')
+                    ->where('pr.store_location_id', $storeId)
+                    ->where('pr.is_active', true);
+            });
+        }
+
         // ===============================
         // 8) Sorting
         // ===============================

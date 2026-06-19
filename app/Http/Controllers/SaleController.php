@@ -18,6 +18,7 @@ use App\Models\RegisterSession;
 use Illuminate\Support\Facades\Schema;
 
 use App\Services\InventoryService;
+use App\Services\RecipeService;
 
 class SaleController extends Controller
 {
@@ -132,6 +133,10 @@ class SaleController extends Controller
                 ->get()
                 ->keyBy('id');
 
+            $recipeService = app(RecipeService::class);
+            $recipesByProduct = $recipeService->loadActiveForProducts($productIds, (int) $storeId);
+            $recipeLineQty = [];
+
             /* =====================================================
             * PRELOAD DISCOUNTS (ITEM + GLOBAL)
             * ===================================================== */
@@ -169,7 +174,9 @@ class SaleController extends Controller
                     abort(422, "Produk {$product->name} tidak tersedia di cabang ini.");
                 }
 
-                if ($product->isStockTracked()) {
+                if ($recipesByProduct->has($product->id)) {
+                    $recipeLineQty[$product->id] = ($recipeLineQty[$product->id] ?? 0) + $qty;
+                } elseif ($product->isStockTracked()) {
                     $available = InventoryService::sumQtyRemaining($product->id, (int) $storeId);
                     if ($available < $qty) {
                         abort(422, "Stok {$product->name} tidak cukup (tersisa {$available})");
@@ -230,6 +237,11 @@ class SaleController extends Controller
                 ];
             }
 
+            $recipeService->validateIngredientStock(
+                $recipeService->aggregateIngredientNeeds($recipesByProduct, $recipeLineQty),
+                (int) $storeId
+            );
+
             /* =====================================================
             * GLOBAL DISCOUNT
             * ===================================================== */
@@ -272,14 +284,24 @@ class SaleController extends Controller
             * ===================================================== */
             $additionalCharges = AdditionalCharge::where('store_location_id', $storeId)
                 ->where('is_active', true)
-                ->get();
+                ->get()
+                ->sortBy(fn ($c) => match ($c->type) {
+                    'SERVICE' => 0,
+                    'PB1' => 1,
+                    default => 9,
+                });
 
             $additionalSnapshot = [];
             $additionalTotal = 0.0;
+            $serviceAmount = 0.0;
 
             foreach ($additionalCharges as $c) {
+                $base = $c->type === 'PB1'
+                    ? $grandTotal + $serviceAmount
+                    : $grandTotal;
+
                 if ($c->calc_type === 'PERCENT') {
-                    $amount = $grandTotal * ($c->value / 100);
+                    $amount = $base * ($c->value / 100);
                 } else {
                     $amount = $c->value;
                 }
@@ -287,11 +309,15 @@ class SaleController extends Controller
                 $amount = round($amount, 2);
                 $additionalTotal += $amount;
 
+                if ($c->type === 'SERVICE') {
+                    $serviceAmount = $amount;
+                }
+
                 $additionalSnapshot[] = [
-                    'type'      => $c->type,          // PB1 / SERVICE
-                    'calc_type' => $c->calc_type,     // PERCENT / FIXED
-                    'value'     => (float)$c->value,
-                    'base'      => $grandTotal,       // 🔥 penting
+                    'type'      => $c->type,
+                    'calc_type' => $c->calc_type,
+                    'value'     => (float) $c->value,
+                    'base'      => round($base, 2),
                     'amount'    => $amount,
                 ];
             }
@@ -367,58 +393,36 @@ class SaleController extends Controller
                 $item = SaleItem::create($payload);
 
                 $product = $products[$item->product_id] ?? null;
+                $recipe = $recipesByProduct->get($item->product_id);
 
-                if ($product && $product->isStockTracked()) {
-
-                    // 1️⃣ FIFO (tetap seperti sebelumnya)
-                    $inv->consumeFIFOWithPricing([
-                        'product_id'        => $item->product_id,
-                        'store_location_id' => $storeId,
-                        'qty'               => (float)$item->qty,
-                        'sale_id'           => $sale->id,
-                        'sale_item_id'      => $item->id,
-                        'sale_unit_price'   => (float)$item->net_unit_price,
-                        'user_id'           => $user->id,
-                    ]);
-
-                    // 2️⃣ AMBIL INVENTORY CONSUMPTIONS (SUMBER LEDGER)
-                    $consQuery = DB::table('inventory_consumptions')
-                        ->where('product_id', $item->product_id);
-
-                    if (Schema::hasColumn('inventory_consumptions', 'sale_item_id')) {
-                        $consQuery->where('sale_item_id', $item->id);
-                    } else {
-                        $consQuery->where('sale_id', $sale->id);
+                if ($recipe) {
+                    foreach ($recipe->items as $line) {
+                        $ingredientQty = $recipeService->stockQtyForSale(
+                            $line,
+                            (float) $item->qty
+                        );
+                        $this->consumeSaleInventory(
+                            $inv,
+                            $sale,
+                            $storeId,
+                            $user,
+                            (int) $line->ingredient_product_id,
+                            $ingredientQty,
+                            $item->id,
+                            0.0
+                        );
                     }
-
-                    $consRows = $consQuery
-                        ->orderBy('id')
-                        ->get(['layer_id', 'qty', 'unit_cost']);
-
-                    // 3️⃣ TULIS STOCK LEDGER (OUT)
-                    foreach ($consRows as $c) {
-                        DB::table('stock_ledger')->insert([
-                            'product_id'        => $item->product_id,
-                            'store_location_id' => $storeId,
-                            'layer_id'          => $c->layer_id,
-                            'user_id'           => $user->id ?? null,
-
-                            'ref_type'          => 'SALE',
-                            'ref_id'            => $sale->id,
-
-                            'direction'         => -1, // OUT
-                            'qty'               => (float)$c->qty,
-                            'unit_cost'         => (float)$c->unit_cost,
-
-                            // opsional tapi DIPAKAI KEMARIN
-                            'unit_price'        => (float)$item->net_unit_price,
-                            'subtotal_cost'     => (float)$c->qty * (float)$c->unit_cost,
-
-                            'note'              => "sale #{$sale->code}",
-                            'created_at'        => now(),
-                            'updated_at'        => now(),
-                        ]);
-                    }
+                } elseif ($product && $product->isStockTracked()) {
+                    $this->consumeSaleInventory(
+                        $inv,
+                        $sale,
+                        $storeId,
+                        $user,
+                        (int) $item->product_id,
+                        (float) $item->qty,
+                        $item->id,
+                        (float) $item->net_unit_price
+                    );
                 }
             }
 
@@ -519,10 +523,19 @@ class SaleController extends Controller
             }
 
             // 4) Tandai konsumsi sudah di-reverse (jangan dihapus)
+            $productIdsToSync = $cons->pluck('product_id')->unique()->all();
+
             DB::table('inventory_consumptions')
                 ->where('sale_id', $sale->id)
                 ->whereNull('reversed_at')
                 ->update(['reversed_at' => now(), 'updated_at' => now()]);
+
+            foreach ($productIdsToSync as $pid) {
+                InventoryService::syncLegacyProductStock(
+                    (int) $pid,
+                    (int) $sale->store_location_id
+                );
+            }
 
             // 5) Status sale
             $sale->update(['status' => 'void']);
@@ -575,5 +588,66 @@ class SaleController extends Controller
             'items'   => $items,
             'summary' => $summary,
         ]);
+    }
+
+    private function consumeSaleInventory(
+        InventoryService $inv,
+        Sale $sale,
+        int $storeId,
+        $user,
+        int $productId,
+        float $qty,
+        int $saleItemId,
+        float $saleUnitPrice
+    ): void {
+        if ($qty <= 0) {
+            return;
+        }
+
+        $inv->consumeFIFOWithPricing([
+            'product_id'        => $productId,
+            'store_location_id' => $storeId,
+            'qty'               => $qty,
+            'sale_id'           => $sale->id,
+            'sale_item_id'      => $saleItemId,
+            'sale_unit_price'   => $saleUnitPrice,
+            'user_id'           => $user->id,
+        ]);
+
+        $consQuery = DB::table('inventory_consumptions')
+            ->where('product_id', $productId);
+
+        if (Schema::hasColumn('inventory_consumptions', 'sale_item_id')) {
+            $consQuery->where('sale_item_id', $saleItemId);
+        } else {
+            $consQuery->where('sale_id', $sale->id);
+        }
+
+        $consRows = $consQuery
+            ->orderBy('id')
+            ->get(['layer_id', 'qty', 'unit_cost']);
+
+        if (Schema::hasTable('stock_ledger')) {
+            foreach ($consRows as $c) {
+                DB::table('stock_ledger')->insert([
+                    'product_id'        => $productId,
+                    'store_location_id' => $storeId,
+                    'layer_id'          => $c->layer_id,
+                    'user_id'           => $user->id ?? null,
+                    'ref_type'          => 'SALE',
+                    'ref_id'            => $sale->id,
+                    'direction'         => -1,
+                    'qty'               => (float) $c->qty,
+                    'unit_cost'         => (float) $c->unit_cost,
+                    'unit_price'        => $saleUnitPrice > 0 ? $saleUnitPrice : null,
+                    'subtotal_cost'     => (float) $c->qty * (float) $c->unit_cost,
+                    'note'              => "sale #{$sale->code}",
+                    'created_at'        => now(),
+                    'updated_at'        => now(),
+                ]);
+            }
+        }
+
+        InventoryService::syncLegacyProductStock($productId, $storeId);
     }
 }

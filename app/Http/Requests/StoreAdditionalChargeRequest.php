@@ -9,10 +9,11 @@ class StoreAdditionalChargeRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'type'      => 'required|in:PB1,SERVICE',
-            'calc_type' => 'required|in:PERCENT,FIXED',
-            'value'     => 'required|numeric|min:0',
-            'is_active' => 'boolean',
+            'store_location_id' => 'nullable|integer|exists:store_locations,id',
+            'type'              => 'required|in:PB1,SERVICE',
+            'calc_type'         => 'required|in:PERCENT,FIXED',
+            'value'             => 'required|numeric|min:0',
+            'is_active'         => 'boolean',
         ];
     }
 

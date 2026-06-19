@@ -12,11 +12,15 @@ use Illuminate\Support\Facades\Auth;
 class AdditionalChargeController extends Controller
 {
     /**
-     * List additional charges untuk store user login
+     * List additional charges for a specific store (query: store_location_id).
      */
     public function index(Request $request)
     {
-        $storeId = Auth::user()->store_location_id;
+        $storeId = $this->resolveStoreIdFromRequest($request);
+
+        if ($storeId === null) {
+            return collect([]);
+        }
 
         return AdditionalCharge::query()
             ->where('store_location_id', $storeId)
@@ -25,20 +29,28 @@ class AdditionalChargeController extends Controller
     }
 
     /**
-     * Create additional charge (PB1 / SERVICE)
-     * store_location_id DIINJECT dari user login
+     * Create additional charge (PB1 / SERVICE) for a store.
      */
     public function store(StoreAdditionalChargeRequest $request)
     {
-        $storeId = Auth::user()->store_location_id;
+        $data = $request->validated();
+        $requested = isset($data['store_location_id'])
+            ? (int) $data['store_location_id']
+            : null;
+        unset($data['store_location_id']);
+
+        $storeId = $this->resolveStoreIdFromRequest($request, $requested);
+
+        if ($storeId === null) {
+            abort(422, 'Store wajib dipilih.');
+        }
 
         try {
             return AdditionalCharge::create([
-                ...$request->validated(),
+                ...$data,
                 'store_location_id' => $storeId,
             ]);
         } catch (QueryException $e) {
-            // unique constraint (store_location_id, type)
             if ($e->getCode() === '23000') {
                 abort(422, 'PB1 / Service untuk store ini sudah ada.');
             }
@@ -47,20 +59,13 @@ class AdditionalChargeController extends Controller
         }
     }
 
-    /**
-     * Show detail
-     * (opsional: bisa ditambah policy kalau mau)
-     */
     public function show(AdditionalCharge $additionalCharge)
     {
         $this->authorizeStore($additionalCharge);
+
         return $additionalCharge;
     }
 
-    /**
-     * Update additional charge
-     * store_location_id TIDAK BOLEH diubah
-     */
     public function update(
         UpdateAdditionalChargeRequest $request,
         AdditionalCharge $additionalCharge
@@ -69,6 +74,7 @@ class AdditionalChargeController extends Controller
 
         try {
             $additionalCharge->update($request->validated());
+
             return $additionalCharge;
         } catch (QueryException $e) {
             if ($e->getCode() === '23000') {
@@ -79,24 +85,20 @@ class AdditionalChargeController extends Controller
         }
     }
 
-    /**
-     * Delete additional charge
-     */
     public function destroy(AdditionalCharge $additionalCharge)
     {
         $this->authorizeStore($additionalCharge);
 
         $additionalCharge->delete();
+
         return response()->noContent();
     }
 
-    /**
-     * Pastikan data milik store user login
-     */
     protected function authorizeStore(AdditionalCharge $additionalCharge): void
     {
-        if ($additionalCharge->store_location_id !== Auth::user()->store_location_id) {
-            abort(403, 'Tidak punya akses ke store ini.');
-        }
+        $this->authorizeStoreAccess(
+            Auth::user(),
+            (int) $additionalCharge->store_location_id
+        );
     }
 }
