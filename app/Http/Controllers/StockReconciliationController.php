@@ -204,8 +204,8 @@ class StockReconciliationController extends Controller
                 'sr.date_from','sr.date_to',
                 DB::raw('COALESCE(sl.name, "") as store_name'),
                 DB::raw('COALESCE(u.name, "") as user_name'),
-                DB::raw('COALESCE(sr.total_items, 0) as total_items'),
-                DB::raw('COALESCE(sr.total_value, 0) as total_value')
+                DB::raw('(SELECT COUNT(*) FROM stock_reconciliation_items i WHERE i.stock_reconciliation_id = sr.id) as total_items'),
+                DB::raw('(SELECT COALESCE(SUM(COALESCE(i.physical_qty, i.system_qty) * COALESCE(i.avg_cost, 0)), 0) FROM stock_reconciliation_items i WHERE i.stock_reconciliation_id = sr.id) as total_value')
             )
             ->when($storeId !== null, fn ($qq) => $qq->where('sr.store_location_id', $storeId))
             ->when($storeId === null && $user && ! $user->isAdmin(), function ($qq) use ($user) {

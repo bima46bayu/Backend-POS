@@ -15,6 +15,7 @@ use App\Http\Controllers\PaymentRequestController;
 use App\Http\Controllers\PaymentRequestItemController;
 use App\Http\Controllers\PaymentRequestBalanceController;
 use App\Http\Controllers\PosCheckoutController;
+use App\Http\Controllers\ProductRecipeController;
 use App\Http\Controllers\ProductController;
 use App\Http\Controllers\ProductImportController;
 use App\Http\Controllers\PurchaseController;
@@ -183,6 +184,8 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
     */
     Route::apiResource('additional-charges', AdditionalChargeController::class);
 
+    Route::get('product-recipes', [ProductRecipeController::class, 'index']);
+
     /*
     |--------------------------------------------------------------------------
     | STAFF (admin + kasir)
@@ -274,6 +277,11 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
         });
 
         Route::apiResource('units', UnitController::class)->only(['index','store','update','destroy']);
+
+        Route::post('product-recipes', [ProductRecipeController::class, 'store']);
+        Route::get('product-recipes/{product_recipe}', [ProductRecipeController::class, 'show']);
+        Route::put('product-recipes/{product_recipe}', [ProductRecipeController::class, 'update']);
+        Route::delete('product-recipes/{product_recipe}', [ProductRecipeController::class, 'destroy']);
 
         Route::prefix('discounts')->group(function () {
             Route::post('/', [DiscountController::class, 'store']);
