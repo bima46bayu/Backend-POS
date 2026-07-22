@@ -247,14 +247,22 @@ class RegisterSessionController extends Controller
         $cashPayments = 0.0;
         $nonCashPayments = 0.0;
         foreach ($completedSales as $sale) {
+            $saleCash = 0.0;
             foreach ($sale->payments as $p) {
                 $method = strtoupper((string) $p->method);
                 if ($method === 'CASH') {
-                    $cashPayments += (float) $p->amount;
+                    $saleCash += (float) $p->amount;
                 } else {
                     $nonCashPayments += (float) $p->amount;
                 }
             }
+            // Change is always returned in cash, so it leaves the drawer.
+            // Net cash received = cash tendered - change given back.
+            $saleCash -= (float) ($sale->change ?? 0);
+            if ($saleCash < 0) {
+                $saleCash = 0.0;
+            }
+            $cashPayments += $saleCash;
         }
 
         $voidCount = $allSales->where('status', 'void')->count();
