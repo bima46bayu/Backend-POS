@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use App\Models\AppSetting;
 use App\Models\PaymentRequest;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Support\Facades\URL;
@@ -141,13 +142,15 @@ class PaymentRequestController extends Controller
         $totalPotongan = $pr->items->sum('deduction');
         $totalTransfer = $pr->items->sum('transfer_amount');
         $totalSaldo    = $pr->balances->sum('saldo');
+        $signatories   = AppSetting::paymentRequestSignatories();
 
         $pdf = Pdf::loadView('pdf.payment-request', compact(
             'pr',
             'totalTagihan',
             'totalPotongan',
             'totalTransfer',
-            'totalSaldo'
+            'totalSaldo',
+            'signatories'
         ))
         ->setPaper('A4', 'portrait')
         ->setOptions([

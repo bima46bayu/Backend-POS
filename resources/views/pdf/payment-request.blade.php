@@ -241,36 +241,39 @@ $totalTransfer += (float)$item->transfer_amount;
 </table>
 </div>
 
-<!-- SIGNATURE -->
+<!-- SIGNATURE (configured via app_settings: payment_request.signatories) -->
+@php
+    $roles = ['submitted', 'acknowledged', 'approved'];
+    $signatories = $signatories ?? \App\Models\AppSetting::paymentRequestSignatories();
+@endphp
 <table class="signature-table">
 <tr>
-<td>Diajukan Oleh,</td>
-<td>Diketahui Oleh,</td>
-<td>Disetujui Oleh,</td>
+@foreach($roles as $role)
+<td>{{ $signatories[$role]['label'] ?? '' }}</td>
+@endforeach
 </tr>
 
 <tr>
+@foreach($roles as $role)
+@php
+    $sig = $signatories[$role] ?? [];
+    $show = !empty($sig['show_signature']) && !empty($sig['signature']);
+    $sigPath = $show ? public_path($sig['signature']) : null;
+@endphp
 <td>
     <div class="signature-box">
-        <img src="{{ public_path('signatures/sig-amel.png') }}">
+        @if($show && $sigPath && file_exists($sigPath))
+            <img src="{{ $sigPath }}">
+        @endif
     </div>
 </td>
-<td>
-    <div class="signature-box">
-        <img src="{{ public_path('signatures/sig-bu-susi.png') }}">
-    </div>
-</td>
-<td>
-    <div class="signature-box">
-        <!-- kosong / nanti -->
-    </div>
-</td>
+@endforeach
 </tr>
 
 <tr>
-<td><b>{{ auth()->user()->name ?? 'Nuramelia Hakim' }}</b></td>
-<td><b>Susi Kartika C.</b></td>
-<td><b>Song JungLog</b></td>
+@foreach($roles as $role)
+<td><b>{{ $signatories[$role]['name'] ?? '' }}</b></td>
+@endforeach
 </tr>
 </table>
 
