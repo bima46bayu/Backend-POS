@@ -3,6 +3,7 @@
 use Illuminate\Support\Facades\Route;
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\AppSettingController;
 use App\Http\Controllers\AdditionalChargeController;
 use App\Http\Controllers\BankAccountController;
 use App\Http\Controllers\CategoryController;
@@ -307,6 +308,17 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
             Route::post('/{id}/balances', [PaymentRequestBalanceController::class, 'store']);
             Route::put('/{id}/balances/{balance}', [PaymentRequestBalanceController::class, 'update']);
             Route::delete('/{id}/balances/{balance}', [PaymentRequestBalanceController::class, 'destroy']);
+        });
+
+        Route::prefix('settings')->group(function () {
+            Route::get('/payment-request-signatories', [AppSettingController::class, 'paymentRequestSignatories']);
+            Route::put('/payment-request-signatories', [AppSettingController::class, 'updatePaymentRequestSignatories']);
+            Route::post('/payment-request-signatories/upload', [AppSettingController::class, 'uploadSignature']);
+
+            Route::get('/payment-request-signers', [AppSettingController::class, 'listSigners']);
+            Route::post('/payment-request-signers', [AppSettingController::class, 'storeSigner']);
+            Route::put('/payment-request-signers/{id}', [AppSettingController::class, 'updateSigner'])->whereNumber('id');
+            Route::delete('/payment-request-signers/{id}', [AppSettingController::class, 'destroySigner'])->whereNumber('id');
         });
 
     });
