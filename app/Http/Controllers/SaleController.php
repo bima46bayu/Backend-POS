@@ -448,6 +448,25 @@ class SaleController extends Controller
             return response()->json(['message' => 'Sale already void'], 422);
         }
 
+        $user = auth()->user();
+        $this->authorizeStoreAccess($user, (int) $sale->store_location_id);
+
+        // Kasir must provide the parent-store void security code (manager override).
+        if ($user && method_exists($user, 'isKasir') && $user->isKasir()) {
+            $code = request()->input('security_code');
+            if (!\App\Models\AppSetting::verifyVoidSecurityCode(
+                is_string($code) ? $code : null,
+                (int) $sale->store_location_id
+            )) {
+                return response()->json([
+                    'message' => 'Kode keamanan salah atau belum diisi.',
+                    'errors' => [
+                        'security_code' => ['Kode keamanan salah.'],
+                    ],
+                ], 422);
+            }
+        }
+
         return DB::transaction(function () use ($sale) {
             $sale->load('items.product', 'cashier');
 

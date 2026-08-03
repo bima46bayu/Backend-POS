@@ -97,6 +97,7 @@ trait AuthorizesStoreAccess
 
     /**
      * Apply list filters for sales/history: optional store query param, else role scope.
+     * Supports store_location_id (single) or store_location_ids[] (parent + branches).
      */
     protected function applySaleStoreScope(Builder $query, Request $request, string $column = 'store_location_id'): Builder
     {
@@ -105,17 +106,46 @@ trait AuthorizesStoreAccess
             return $query->whereRaw('1 = 0');
         }
 
-        $storeId = null;
-        if ($request->filled('store_location_id')) {
-            $storeId = (int) $request->input('store_location_id');
-        } elseif ($request->filled('store_id')) {
-            $storeId = (int) $request->input('store_id');
+        $storeIds = [];
+        if ($request->filled('store_location_ids')) {
+            $raw = $request->input('store_location_ids');
+            if (is_string($raw)) {
+                $raw = preg_split('/\s*,\s*/', $raw, -1, PREG_SPLIT_NO_EMPTY);
+            }
+            if (is_array($raw)) {
+                foreach ($raw as $id) {
+                    $n = (int) $id;
+                    if ($n > 0) {
+                        $storeIds[] = $n;
+                    }
+                }
+            }
         }
 
-        if ($storeId !== null) {
-            $this->authorizeStoreAccess($user, $storeId);
+        if ($storeIds === []) {
+            $storeId = null;
+            if ($request->filled('store_location_id')) {
+                $storeId = (int) $request->input('store_location_id');
+            } elseif ($request->filled('store_id')) {
+                $storeId = (int) $request->input('store_id');
+            }
+            if ($storeId !== null) {
+                $storeIds = [$storeId];
+            }
+        }
 
-            return $query->where($column, $storeId);
+        $storeIds = array_values(array_unique($storeIds));
+
+        if ($storeIds !== []) {
+            foreach ($storeIds as $sid) {
+                $this->authorizeStoreAccess($user, $sid);
+            }
+
+            if (count($storeIds) === 1) {
+                return $query->where($column, $storeIds[0]);
+            }
+
+            return $query->whereIn($column, $storeIds);
         }
 
         if ($user->isAdmin()) {

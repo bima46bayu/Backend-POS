@@ -96,7 +96,8 @@ class PurchaseController extends Controller
         return $purchase->load([
             'supplier:id,name',
             'storeLocation:id,name',
-            'items.product:id,sku,name',
+            'items.product:id,sku,name,unit_id',
+            'items.product.unit:id,name',
         ]);
     }
 
@@ -185,7 +186,8 @@ class PurchaseController extends Controller
             return $po->load([
                 'supplier:id,name',
                 'storeLocation:id,name',
-                'items.product:id,sku,name',
+                'items.product:id,sku,name,unit_id',
+                'items.product.unit:id,name',
             ]);
         });
 
@@ -238,7 +240,8 @@ class PurchaseController extends Controller
         $rows = Purchase::with([
             'supplier:id,name',
             'storeLocation:id,name',
-            'items.product:id,sku,name',
+            'items.product:id,sku,name,unit_id',
+            'items.product.unit:id,name',
         ])->whereIn('id', $ids)->get();
 
         return response()->json(['items' => $rows]);

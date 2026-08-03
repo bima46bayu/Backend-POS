@@ -149,6 +149,7 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
         Route::get('/', [SaleController::class, 'index']);
         Route::get('/{sale}', [SaleController::class, 'show'])->whereNumber('sale');
         Route::post('/', [SaleController::class, 'store']);
+        Route::post('/{sale}/void', [SaleController::class, 'void'])->whereNumber('sale');
         Route::get('/{sale}/fifo-breakdown', [SaleController::class, 'fifoBreakdown'])->whereNumber('sale');
     });
 
@@ -251,10 +252,6 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
             Route::delete('/{supplier}', [SupplierController::class, 'destroy'])->whereNumber('supplier');
         });
 
-        Route::prefix('sales')->group(function () {
-            Route::post('/{sale}/void', [SaleController::class, 'void'])->whereNumber('sale');
-        });
-
         Route::prefix('users')->group(function () {
             Route::get('/', [UserController::class, 'index']);
             Route::get('/roles/options', [UserController::class, 'roleOptions']);
@@ -319,6 +316,9 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
             Route::post('/payment-request-signers', [AppSettingController::class, 'storeSigner']);
             Route::put('/payment-request-signers/{id}', [AppSettingController::class, 'updateSigner'])->whereNumber('id');
             Route::delete('/payment-request-signers/{id}', [AppSettingController::class, 'destroySigner'])->whereNumber('id');
+
+            Route::get('/void-security-code', [AppSettingController::class, 'voidSecurityCode']);
+            Route::put('/void-security-code', [AppSettingController::class, 'updateVoidSecurityCode']);
         });
 
     });
