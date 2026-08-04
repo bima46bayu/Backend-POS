@@ -27,6 +27,7 @@ use App\Http\Controllers\SaleController;
 use App\Http\Controllers\StockController;
 use App\Http\Controllers\StockLogController;
 use App\Http\Controllers\StockReconciliationController;
+use App\Http\Controllers\StockWriteOffController;
 use App\Http\Controllers\StoreLocationController;
 use App\Http\Controllers\SubCategoryController;
 use App\Http\Controllers\SupplierController;
@@ -132,6 +133,16 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
     Route::prefix('suppliers')->group(function () {
         Route::get('/', [SupplierController::class, 'index']);
         Route::get('/{supplier}', [SupplierController::class, 'show'])->whereNumber('supplier');
+    });
+
+    /*
+    | Stock write-offs (waste / spoiled / expired) — consumes FIFO layers
+    */
+    Route::prefix('stock-write-offs')->group(function () {
+        Route::get('/reasons', [StockWriteOffController::class, 'reasons']);
+        Route::get('/summary', [StockWriteOffController::class, 'summary']);
+        Route::get('/', [StockWriteOffController::class, 'index']);
+        Route::post('/', [StockWriteOffController::class, 'store']);
     });
 
     /*
