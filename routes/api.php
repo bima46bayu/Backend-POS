@@ -27,6 +27,7 @@ use App\Http\Controllers\SaleController;
 use App\Http\Controllers\StockController;
 use App\Http\Controllers\StockLogController;
 use App\Http\Controllers\StockReconciliationController;
+use App\Http\Controllers\StockWriteOffController;
 use App\Http\Controllers\StoreLocationController;
 use App\Http\Controllers\SubCategoryController;
 use App\Http\Controllers\SupplierController;
@@ -135,6 +136,16 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
     });
 
     /*
+    | Stock write-offs (waste / spoiled / expired) — consumes FIFO layers
+    */
+    Route::prefix('stock-write-offs')->group(function () {
+        Route::get('/reasons', [StockWriteOffController::class, 'reasons']);
+        Route::get('/summary', [StockWriteOffController::class, 'summary']);
+        Route::get('/', [StockWriteOffController::class, 'index']);
+        Route::post('/', [StockWriteOffController::class, 'store']);
+    });
+
+    /*
     | Stock Logs
     */
     Route::prefix('stock-logs')->group(function () {
@@ -149,6 +160,7 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
         Route::get('/', [SaleController::class, 'index']);
         Route::get('/{sale}', [SaleController::class, 'show'])->whereNumber('sale');
         Route::post('/', [SaleController::class, 'store']);
+        Route::post('/{sale}/void', [SaleController::class, 'void'])->whereNumber('sale');
         Route::get('/{sale}/fifo-breakdown', [SaleController::class, 'fifoBreakdown'])->whereNumber('sale');
     });
 
@@ -251,10 +263,6 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
             Route::delete('/{supplier}', [SupplierController::class, 'destroy'])->whereNumber('supplier');
         });
 
-        Route::prefix('sales')->group(function () {
-            Route::post('/{sale}/void', [SaleController::class, 'void'])->whereNumber('sale');
-        });
-
         Route::prefix('users')->group(function () {
             Route::get('/', [UserController::class, 'index']);
             Route::get('/roles/options', [UserController::class, 'roleOptions']);
@@ -319,6 +327,9 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
             Route::post('/payment-request-signers', [AppSettingController::class, 'storeSigner']);
             Route::put('/payment-request-signers/{id}', [AppSettingController::class, 'updateSigner'])->whereNumber('id');
             Route::delete('/payment-request-signers/{id}', [AppSettingController::class, 'destroySigner'])->whereNumber('id');
+
+            Route::get('/void-security-code', [AppSettingController::class, 'voidSecurityCode']);
+            Route::put('/void-security-code', [AppSettingController::class, 'updateVoidSecurityCode']);
         });
 
     });

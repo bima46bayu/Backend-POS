@@ -244,4 +244,91 @@ class AppSettingController extends Controller
 
         return ltrim(str_replace('\\', '/', $signature), '/');
     }
+
+    /* ========== Void security code (auto-rotates every hour per parent) ========== */
+
+    public function voidSecurityCode(Request $request)
+    {
+        $data = $request->validate([
+            'store_location_id' => ['nullable', 'integer', 'exists:store_locations,id'],
+        ]);
+
+        $storeId = isset($data['store_location_id'])
+            ? (int) $data['store_location_id']
+            : null;
+
+        if ($storeId !== null) {
+            $this->authorizeStoreAccess($request->user(), $storeId);
+            $meta = AppSetting::currentVoidSecurityCode($storeId);
+            $owner = \App\Models\StoreLocation::query()->find($meta['owner_store_id']);
+
+            return response()->json([
+                'store_location_id' => $storeId,
+                'owner_store_id' => $meta['owner_store_id'],
+                'owner_store_name' => $owner
+                    ? trim(($owner->code ? $owner->code . ' - ' : '') . $owner->name)
+                    : null,
+                'security_code' => $meta['security_code'],
+                'valid_until' => $meta['valid_until'],
+                'timezone' => $meta['timezone'],
+                'rotates_every_minutes' => $meta['rotates_every_minutes'],
+                'mode' => 'hourly_auto',
+            ]);
+        }
+
+        // Summary list for all parent/root stores the user can access.
+        $parents = \App\Models\StoreLocation::query()
+            ->whereNull('parent_id')
+            ->orderBy('name')
+            ->get();
+
+        $user = $request->user();
+        $items = [];
+        foreach ($parents as $parent) {
+            if (!$user->canAccessStore((int) $parent->id)) {
+                continue;
+            }
+            $meta = AppSetting::currentVoidSecurityCode((int) $parent->id);
+            $items[] = [
+                'owner_store_id' => (int) $parent->id,
+                'owner_store_name' => trim(($parent->code ? $parent->code . ' - ' : '') . $parent->name),
+                'security_code' => $meta['security_code'],
+                'valid_until' => $meta['valid_until'],
+            ];
+        }
+
+        return response()->json([
+            'items' => $items,
+            'timezone' => AppSetting::VOID_CODE_TIMEZONE,
+            'rotates_every_minutes' => 60,
+            'mode' => 'hourly_auto',
+            'message' => 'Kode void diganti otomatis setiap 1 jam (Asia/Jakarta). Tidak perlu diset manual.',
+        ]);
+    }
+
+    public function updateVoidSecurityCode(Request $request)
+    {
+        $data = $request->validate([
+            'store_location_id' => ['required', 'integer', 'exists:store_locations,id'],
+        ]);
+
+        $storeId = (int) $data['store_location_id'];
+        $this->authorizeStoreAccess($request->user(), $storeId);
+        $meta = AppSetting::currentVoidSecurityCode($storeId);
+
+        return response()->json([
+            'message' => 'Kode void diganti otomatis setiap 1 jam. Tidak perlu diset manual.',
+            'owner_store_id' => $meta['owner_store_id'],
+            'security_code' => $meta['security_code'],
+            'valid_until' => $meta['valid_until'],
+            'mode' => 'hourly_auto',
+        ]);
+    }
+
+    protected function authorizeStoreAccess($user, ?int $storeId): void
+    {
+        if (!$user || !$user->canAccessStore($storeId)) {
+            abort(403, 'Store access denied');
+        }
+    }
 }

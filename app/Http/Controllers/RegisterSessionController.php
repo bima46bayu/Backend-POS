@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\RegisterSession;
 use App\Models\RegisterSessionCart;
 use App\Models\Sale;
+use App\Models\StockWriteOff;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
@@ -330,6 +331,8 @@ class RegisterSessionController extends Controller
             ->values()
             ->all();
 
+        $writeOffs = $this->buildWriteOffSummary($storeId, $session->opened_at, $closingAt);
+
         return [
             'header' => [
                 'session_id'   => $session->id,
@@ -350,9 +353,63 @@ class RegisterSessionController extends Controller
                 'difference'           => $difference,
                 'void_transactions'    => $voidCount,
                 'void_amount'           => $voidAmount,
+                'write_off_qty'        => $writeOffs['total_qty'],
+                'write_off_cost'       => $writeOffs['total_cost'],
             ],
             'sales' => $salesRows,
             'sold_items' => $soldItems,
+            'write_offs' => $writeOffs['items'],
+            'write_off_totals' => $writeOffs['by_reason'],
+        ];
+    }
+
+    /**
+     * Waste / spoiled / expired recorded for this store during the session window.
+     *
+     * @return array{items: array, by_reason: array, total_qty: int, total_cost: float}
+     */
+    protected function buildWriteOffSummary(?int $storeId, ?Carbon $openedAt, Carbon $closingAt): array
+    {
+        if (! $openedAt || $storeId === null) {
+            return ['items' => [], 'by_reason' => [], 'total_qty' => 0, 'total_cost' => 0.0];
+        }
+
+        $rows = StockWriteOff::with(['product:id,sku,name'])
+            ->where('store_location_id', $storeId)
+            ->whereBetween('created_at', [$openedAt, $closingAt])
+            ->orderBy('id')
+            ->get();
+
+        $items = $rows->map(function (StockWriteOff $w) {
+            return [
+                'id' => $w->id,
+                'product_id' => $w->product_id,
+                'product_name' => optional($w->product)->name ?? '-',
+                'product_sku' => optional($w->product)->sku,
+                'reason' => $w->reason,
+                'reason_label' => StockWriteOff::reasonLabels()[$w->reason] ?? $w->reason,
+                'qty' => (int) $w->qty,
+                'total_cost' => (float) $w->total_cost,
+                'note' => $w->note,
+                'created_at' => $w->created_at?->toDateTimeString(),
+            ];
+        })->values()->all();
+
+        $byReason = [];
+        foreach ($rows->groupBy('reason') as $reason => $group) {
+            $byReason[] = [
+                'reason' => $reason,
+                'label' => StockWriteOff::reasonLabels()[$reason] ?? $reason,
+                'qty' => (int) $group->sum('qty'),
+                'cost' => (float) $group->sum('total_cost'),
+            ];
+        }
+
+        return [
+            'items' => $items,
+            'by_reason' => $byReason,
+            'total_qty' => (int) $rows->sum('qty'),
+            'total_cost' => (float) $rows->sum('total_cost'),
         ];
     }
 
