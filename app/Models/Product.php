@@ -59,6 +59,16 @@ class Product extends Model
         return $this->belongsTo(Unit::class, 'unit_id');
     }
 
+    public function optionGroups()
+    {
+        return $this->belongsToMany(
+            ProductOptionGroup::class,
+            'product_product_option_group',
+            'product_id',
+            'product_option_group_id'
+        );
+    }
+
     /**
      * Filter katalog untuk store tertentu.
      * $includeGlobal=true → produk global (NULL) juga ikut.

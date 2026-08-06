@@ -32,8 +32,14 @@ class StoreSaleRequest extends FormRequest
             'items.*.product_id'      => 'required|integer|exists:products,id',
             'items.*.qty'             => 'required|integer|min:1',
             // jika ingin selalu ambil harga dari DB, ganti ke 'nullable|numeric|min:0'
+            // CATATAN: ini harga DASAR produk. Tambahan harga opsi dihitung server.
             'items.*.unit_price'      => 'required|numeric|min:0',
             'items.*.discount_nominal'=> 'nullable|numeric|min:0', // diskon per unit (Rp)
+
+            // Opsi item (sugar level, ice level, dll) — kirim ID-nya saja,
+            // nama & harga diambil server dari master (anti tamper).
+            'items.*.option_value_ids'   => 'nullable|array',
+            'items.*.option_value_ids.*' => 'integer|exists:product_option_values,id',
 
             // Header adjustments
             'discount'                => 'nullable|numeric|min:0', // diskon header (Rp)

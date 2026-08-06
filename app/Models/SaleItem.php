@@ -16,6 +16,10 @@ class SaleItem extends Model
         'sale_id',
         'product_id',
 
+        // snapshot opsi item (sugar level, ice level, dll)
+        'options',
+        'options_price',
+
         // harga & qty
         'qty',
         'unit_price',
@@ -35,6 +39,8 @@ class SaleItem extends Model
     protected $casts = [
         'qty'              => 'integer',   // ⬅️ jangan integer (aman untuk desimal)
         'unit_price'       => 'float',
+        'options'          => 'array',
+        'options_price'    => 'float',
         'discount_nominal' => 'float',
         'net_unit_price'   => 'float',
         'line_total'       => 'float',

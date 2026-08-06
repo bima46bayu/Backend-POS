@@ -19,6 +19,7 @@ use App\Http\Controllers\PosCheckoutController;
 use App\Http\Controllers\ProductRecipeController;
 use App\Http\Controllers\ProductController;
 use App\Http\Controllers\ProductImportController;
+use App\Http\Controllers\ProductOptionGroupController;
 use App\Http\Controllers\PurchaseController;
 use App\Http\Controllers\PurchaseReceiveController;
 use App\Http\Controllers\ReportController;
@@ -198,6 +199,17 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
     */
     Route::apiResource('additional-charges', AdditionalChargeController::class);
 
+    /*
+    | Product Option Groups (sugar level, ice level, dll) — read for cashier
+    */
+    Route::prefix('product-option-groups')->group(function () {
+        Route::get('/', [ProductOptionGroupController::class, 'index']);
+        Route::get('/{product_option_group}/products', [ProductOptionGroupController::class, 'products'])
+            ->whereNumber('product_option_group');
+        Route::get('/{product_option_group}', [ProductOptionGroupController::class, 'show'])
+            ->whereNumber('product_option_group');
+    });
+
     Route::get('product-recipes', [ProductRecipeController::class, 'index']);
 
     /*
@@ -298,6 +310,16 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
             Route::put('/{discount}', [DiscountController::class, 'update']);
             Route::delete('/{discount}', [DiscountController::class, 'destroy']);
             Route::patch('/{discount}/toggle', [DiscountController::class, 'toggle']);
+        });
+
+        Route::prefix('product-option-groups')->group(function () {
+            Route::post('/', [ProductOptionGroupController::class, 'store']);
+            Route::match(['put','patch'], '/{product_option_group}/products', [ProductOptionGroupController::class, 'syncProducts'])
+                ->whereNumber('product_option_group');
+            Route::match(['put','patch'], '/{product_option_group}', [ProductOptionGroupController::class, 'update'])
+                ->whereNumber('product_option_group');
+            Route::delete('/{product_option_group}', [ProductOptionGroupController::class, 'destroy'])
+                ->whereNumber('product_option_group');
         });
 
         Route::apiResource('bank-accounts', BankAccountController::class);

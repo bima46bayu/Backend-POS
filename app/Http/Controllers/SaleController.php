@@ -13,6 +13,7 @@ use App\Models\SalePayment;
 use App\Models\Product;
 use App\Models\Discount;
 use App\Models\AdditionalCharge;
+use App\Models\ProductOptionValue;
 use App\Models\RegisterSession;
 
 use Illuminate\Support\Facades\Schema;
@@ -40,7 +41,7 @@ class SaleController extends Controller
         ];
         if (! $withoutItems) {
             $relations = array_merge([
-                'items:id,sale_id,product_id,qty,unit_price,discount_nominal,net_unit_price,line_total,discount_id,discount_name,discount_kind,discount_value',
+                'items:id,sale_id,product_id,qty,unit_price,discount_nominal,net_unit_price,line_total,discount_id,discount_name,discount_kind,discount_value,options,options_price',
                 'items.product:id,name,sku,category_id,sub_category_id,price',
             ], $relations);
         }
@@ -142,6 +143,9 @@ class SaleController extends Controller
                 ->get()
                 ->keyBy('id');
 
+            // eager load option groups (hindari N+1 saat validasi opsi)
+            $products->load('optionGroups');
+
             $recipeService = app(RecipeService::class);
             $recipesByProduct = $recipeService->loadActiveForProducts($productIds, (int) $storeId);
             $recipeLineQty = [];
@@ -165,6 +169,23 @@ class SaleController extends Controller
                 ->where('active', 1)
                 ->get()
                 ->keyBy('id');
+
+            /* =====================================================
+            * PRELOAD OPTION VALUES (sugar level, ice level, dll)
+            * ===================================================== */
+            $optionValueIds = [];
+            foreach ($itemsInput as $it) {
+                foreach ((array) ($it['option_value_ids'] ?? []) as $vid) {
+                    $optionValueIds[] = (int) $vid;
+                }
+            }
+
+            $optionValueMap = $optionValueIds === []
+                ? collect()
+                : ProductOptionValue::with('group')
+                    ->whereIn('id', array_unique($optionValueIds))
+                    ->get()
+                    ->keyBy('id');
 
             /* =====================================================
             * HITUNG ITEMS (ITEM DISCOUNT)
@@ -192,7 +213,77 @@ class SaleController extends Controller
                     }
                 }
 
-                $unitPrice = (float)($row['unit_price'] ?? $product->price);
+                /* ---------- ITEM OPTIONS (sugar level, ice level, dll) ---------- */
+                $optionsSnapshot = [];
+                $optionsPrice    = 0.0;
+
+                $rawOptionIds = array_values(array_unique(array_map(
+                    fn ($v) => (int) $v,
+                    (array) ($row['option_value_ids'] ?? [])
+                )));
+
+                if ($rawOptionIds !== []) {
+                    // group yang boleh dipakai produk ini
+                    $allowedGroupIds = $product->optionGroups
+                        ->pluck('id')
+                        ->map(fn ($v) => (int) $v)
+                        ->all();
+
+                    $seenSingleGroups = [];
+
+                    foreach ($rawOptionIds as $vid) {
+                        $val = $optionValueMap[$vid] ?? null;
+                        if (! $val || ! $val->group) {
+                            abort(422, "Opsi item tidak valid.");
+                        }
+
+                        $group = $val->group;
+
+                        if (! in_array((int) $group->id, $allowedGroupIds, true)) {
+                            abort(422, "Opsi '{$group->name}' tidak tersedia untuk produk {$product->name}.");
+                        }
+
+                        if (! $val->is_active || ! $group->is_active) {
+                            abort(422, "Opsi '{$val->name}' sudah tidak aktif.");
+                        }
+
+                        if (! $group->isMulti()) {
+                            if (isset($seenSingleGroups[$group->id])) {
+                                abort(422, "Opsi '{$group->name}' hanya boleh dipilih satu.");
+                            }
+                            $seenSingleGroups[$group->id] = true;
+                        }
+
+                        $delta = round((float) $val->price_delta, 2);
+                        $optionsPrice += $delta;
+
+                        $optionsSnapshot[] = [
+                            'group_id'    => (int) $group->id,
+                            'group'       => $group->name,
+                            'value_id'    => (int) $val->id,
+                            'name'        => $val->name,
+                            'price_delta' => $delta,
+                        ];
+                    }
+                }
+
+                // wajib: semua group required milik produk harus terpilih
+                $requiredGroups = $product->optionGroups
+                    ->filter(fn ($g) => $g->is_active && $g->is_required);
+
+                foreach ($requiredGroups as $rg) {
+                    $picked = collect($optionsSnapshot)
+                        ->firstWhere('group_id', (int) $rg->id);
+
+                    if (! $picked) {
+                        abort(422, "Opsi '{$rg->name}' wajib dipilih untuk produk {$product->name}.");
+                    }
+                }
+
+                $optionsPrice = round(max(0.0, $optionsPrice), 2);
+
+                $basePrice = (float)($row['unit_price'] ?? $product->price);
+                $unitPrice = round($basePrice + $optionsPrice, 2);
                 $lineBase  = $unitPrice * $qty;
 
                 // ---------- ITEM DISCOUNT ----------
@@ -233,6 +324,10 @@ class SaleController extends Controller
                     'product_id'       => $product->id,
                     'unit_price'       => round($unitPrice, 2),
                     'qty'              => $qty,
+
+                    // 🔥 SNAPSHOT OPSI ITEM (cast 'array' di model yang meng-encode)
+                    'options'          => $optionsSnapshot === [] ? null : $optionsSnapshot,
+                    'options_price'    => $optionsPrice,
 
                     // 🔥 SNAPSHOT DISKON ITEM
                     'discount_id'      => $disc?->id,

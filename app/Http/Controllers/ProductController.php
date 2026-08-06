@@ -125,6 +125,7 @@ class ProductController extends Controller
             'category:id,name',
             'subCategory:id,name',
             'unit:id,name',
+            'optionGroups.values',
         ]);
 
         // ===============================
@@ -326,6 +327,10 @@ class ProductController extends Controller
             'image'             => 'nullable|file|mimes:jpg,jpeg,png,webp,svg,svg+xml|max:5120',
             'store_location_id' => 'nullable|integer|exists:store_locations,id',
             'scope'             => 'nullable|in:global,store',
+
+            // opsi item (sugar level, ice level, dll)
+            'option_group_ids'   => 'nullable|array',
+            'option_group_ids.*' => 'integer|exists:product_option_groups,id',
         ]);
 
         try {
@@ -478,6 +483,13 @@ class ProductController extends Controller
                     InventoryService::syncLegacyProductStock($productId, $storeLocationId);
                 }
 
+                // 6) Opsi item (sugar level, ice level, dll)
+                $this->syncProductOptionGroups(
+                    (int) $productId,
+                    $this->parseOptionGroupIds($req),
+                    $storeLocationId ? (int) $storeLocationId : null
+                );
+
                 // untuk produk non-stock, stock tetap 0. POS akan anggap unlimited dari inventory_type di FE.
                 $product = DB::table('products')->where('id', $productId)->first();
 
@@ -496,13 +508,73 @@ class ProductController extends Controller
 
     public function show(Request $request, Product $product)
     {
-        $product->load('unit');
+        $product->load(['unit', 'optionGroups.values']);
 
         $storeId = $this->resolveStoreIdFromRequest($request);
         $payload = $product->toArray();
         $payload['stock'] = (int) InventoryService::displayStock($product->id, $storeId, $product);
+        $payload['option_group_ids'] = $product->optionGroups->pluck('id')->all();
 
         return response()->json($payload);
+    }
+
+    /**
+     * Ambil option_group_ids dari request (support JSON array & FormData "1,2,3").
+     * Return null kalau field tidak dikirim sama sekali (jangan sentuh relasi).
+     */
+    private function parseOptionGroupIds(Request $req): ?array
+    {
+        if (! $req->has('option_group_ids')) {
+            return null;
+        }
+
+        $raw = $req->input('option_group_ids');
+
+        if (is_string($raw)) {
+            $decoded = json_decode($raw, true);
+            $raw = is_array($decoded)
+                ? $decoded
+                : preg_split('/\s*,\s*/', $raw, -1, PREG_SPLIT_NO_EMPTY);
+        }
+
+        if (! is_array($raw)) {
+            return [];
+        }
+
+        return array_values(array_unique(array_filter(
+            array_map(fn ($v) => (int) $v, $raw),
+            fn ($v) => $v > 0
+        )));
+    }
+
+    /**
+     * Sync option groups ke produk. Hanya izinkan group milik store produk.
+     */
+    private function syncProductOptionGroups(int $productId, ?array $groupIds, ?int $storeLocationId): void
+    {
+        if ($groupIds === null) {
+            return; // field tidak dikirim → jangan ubah
+        }
+
+        $product = Product::find($productId);
+        if (! $product) {
+            return;
+        }
+
+        if ($groupIds === []) {
+            $product->optionGroups()->sync([]);
+            return;
+        }
+
+        $valid = \App\Models\ProductOptionGroup::whereIn('id', $groupIds)
+            ->when(
+                $storeLocationId !== null,
+                fn ($q) => $q->where('store_location_id', $storeLocationId)
+            )
+            ->pluck('id')
+            ->all();
+
+        $product->optionGroups()->sync($valid);
     }
 
     public function update(UpdateProductRequest $request, Product $product)
@@ -561,12 +633,22 @@ class ProductController extends Controller
         $product->fill($data);
         $product->save();
 
+        // opsi item (sugar level, ice level, dll)
+        $this->syncProductOptionGroups(
+            (int) $product->id,
+            $this->parseOptionGroupIds($request),
+            $product->store_location_id ? (int) $product->store_location_id : null
+        );
+
         // load relasi buat FE
-        $product->load(['category', 'subCategory', 'unit', 'storeLocation']);
+        $product->load(['category', 'subCategory', 'unit', 'storeLocation', 'optionGroups.values']);
+
+        $payload = $product->toArray();
+        $payload['option_group_ids'] = $product->optionGroups->pluck('id')->all();
 
         return response()->json([
             'message' => 'Product updated',
-            'data'    => $product,
+            'data'    => $payload,
         ]);
     }
 
