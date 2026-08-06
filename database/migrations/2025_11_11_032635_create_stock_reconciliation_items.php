@@ -12,7 +12,7 @@ return new class extends Migration {
             $t->unsignedBigInteger('product_id');
             $t->string('sku',100)->nullable();
             $t->string('product_name',200)->nullable();
-            $t->integer('system_qty')->default(0);
+            $t->decimal('system_qty', 16, 4)->default(0);
             $t->decimal('avg_cost', 18, 4)->default(0);
             $t->decimal('physical_qty', 18, 4)->nullable(); // bisa null sampai diisi user
             $t->timestamps();

@@ -405,11 +405,14 @@ class InventoryController extends Controller
     // ==== HELPER: logic summary per produk (tanpa response) ====
     private function buildProductSummaryArray(int $productId, Request $r): array
 {
-    $product = Product::find($productId);
+    $product = Product::with('unit:id,name')->find($productId);
 
     if (!$product) {
         return [
             'product_id' => $productId,
+            'product_name' => null,
+            'sku' => null,
+            'unit_name' => null,
             'qty_in' => 0, 'qty_out' => 0,
             'gross_revenue' => 0, 'cogs' => 0, 'gross_profit' => 0,
             'avg_sale_price' => null, 'avg_cost' => null,
@@ -436,7 +439,7 @@ class InventoryController extends Controller
             ->when($r->filled('date_from'), fn($q)=>$q->where('s.created_at','>=',$r->input('date_from').' 00:00:00'))
             ->when($r->filled('date_to'), fn($q)=>$q->where('s.created_at','<=',$r->input('date_to').' 23:59:59'));
 
-        $qtyOutSale  = (int)(clone $salesBase)->sum('si.qty');
+        $qtyOutSale  = (float)(clone $salesBase)->sum('si.qty');
         $itemRevenue = (float)(clone $salesBase)->sum('si.line_total');
 
         $saleSubtotal = (float)(clone $salesBase)->selectRaw('SUM(DISTINCT s.subtotal)')->value('SUM(DISTINCT s.subtotal)');
@@ -451,10 +454,13 @@ class InventoryController extends Controller
 
         $avgSalePrice = $qtyOutSale > 0 ? $grossRevenue / $qtyOutSale : null;
 
-        $endingStock = (int) InventoryService::sumQtyRemaining($productId, $storeId);
+        $endingStock = (float) InventoryService::sumQtyRemaining($productId, $storeId);
 
         return [
             'product_id' => $productId,
+            'product_name' => $product->name,
+            'sku' => $product->sku,
+            'unit_name' => $product->unit?->name,
             'gross_revenue' => $grossRevenue,
             'cogs' => 0,
             'gross_profit' => $grossProfit,
@@ -504,7 +510,7 @@ class InventoryController extends Controller
         ->when($r->filled('date_from'), fn($q)=>$q->where('sl.created_at','>=',$r->input('date_from').' 00:00:00'))
         ->when($r->filled('date_to'), fn($q)=>$q->where('sl.created_at','<=',$r->input('date_to').' 23:59:59'));
 
-    $qtyOutSale  = (int)(clone $saleQuery)->sum('sl.qty');
+    $qtyOutSale  = (float)(clone $saleQuery)->sum('sl.qty');
     $itemRevenue = (float)(clone $saleQuery)->sum('si.line_total');
 
     $saleSubtotal = (float)(clone $saleQuery)->selectRaw('SUM(DISTINCT s.subtotal)')->value('SUM(DISTINCT s.subtotal)');
@@ -525,7 +531,14 @@ class InventoryController extends Controller
     $avgSalePrice = $qtyOutSale > 0 ? $grossRevenue / $qtyOutSale : null;
     $avgCost      = $qtyOutSale > 0 ? $cogs / $qtyOutSale : null;
 
-    $endingStock = (int) InventoryService::sumQtyRemaining($productId, $storeId);
+    $endingStock = (float) InventoryService::sumQtyRemaining($productId, $storeId);
+
+    $qtyIn = (float) DB::table('stock_ledger')
+        ->where('product_id', $productId)
+        ->where('direction', 1)
+        ->where('ref_type', 'GR')
+        ->when($storeId !== null, fn($q)=>$q->where('store_location_id',$storeId))
+        ->sum('qty');
 
     $costIn = (float) DB::table('stock_ledger')
         ->where('product_id', $productId)
@@ -556,6 +569,9 @@ class InventoryController extends Controller
 
     return [
         'product_id' => $productId,
+        'product_name' => $product->name,
+        'sku' => $product->sku,
+        'unit_name' => $product->unit?->name,
 
         'gross_revenue' => $grossRevenue,
         'cogs' => $cogs,
@@ -569,7 +585,7 @@ class InventoryController extends Controller
         'avg_sale_price_total' => $avgSalePrice,
         'avg_cost_total' => $avgCost,
 
-        'qty_in' => 0,
+        'qty_in' => $qtyIn,
         'qty_out' => $qtyOutSale,
         'opening_qty' => $openingQty,
         'opening_cost' => $openingCost,

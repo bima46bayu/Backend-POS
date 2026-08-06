@@ -34,7 +34,7 @@ class StockWriteOff extends Model
     ];
 
     protected $casts = [
-        'qty' => 'integer',
+        'qty' => 'float',
         'unit_cost' => 'float',
         'total_cost' => 'float',
     ];

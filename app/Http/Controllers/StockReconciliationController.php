@@ -306,7 +306,7 @@ class StockReconciliationController extends Controller
             // Seed items
             $batch = [];
             foreach ($products as $p) {
-                $sys = (int)($agg[$p->product_id]->system_qty ?? 0);
+                $sys = (float) ($agg[$p->product_id]->system_qty ?? 0);
                 $avg = (float)($agg[$p->product_id]->avg_cost   ?? 0);
 
                 $batch[] = [
@@ -346,17 +346,28 @@ class StockReconciliationController extends Controller
     {
         $head = $this->authorizeReconciliation((int) $id);
 
-        $items = DB::table('stock_reconciliation_items')
-            ->where('stock_reconciliation_id',$id)
+        $items = DB::table('stock_reconciliation_items as i')
+            ->leftJoin('products as p', 'p.id', '=', 'i.product_id')
+            ->leftJoin('units as u', 'u.id', '=', 'p.unit_id')
+            ->where('i.stock_reconciliation_id', $id)
             ->select(
-                'id','product_id','sku','product_name',
-                'system_qty','avg_cost','physical_qty',
-                DB::raw('COALESCE(physical_qty,0) - COALESCE(system_qty,0) AS diff')
+                'i.id',
+                'i.product_id',
+                'i.sku',
+                'i.product_name',
+                'i.system_qty',
+                'i.avg_cost',
+                'i.physical_qty',
+                DB::raw('u.name as unit_name'),
+                DB::raw('COALESCE(i.physical_qty,0) - COALESCE(i.system_qty,0) AS diff')
             )
-            ->orderBy('product_name')
+            ->orderBy('i.product_name')
             ->get();
 
-        $canProcess = $items->contains(fn($it)=> $it->physical_qty !== null && (int)$it->physical_qty !== (int)$it->system_qty);
+        $canProcess = $items->contains(
+            fn ($it) => $it->physical_qty !== null
+                && abs((float) $it->physical_qty - (float) $it->system_qty) > 1e-9
+        );
 
         return response()->json([
             'header'      => $head,
@@ -458,7 +469,7 @@ class StockReconciliationController extends Controller
                 $rows[] = [
                     $it->sku,
                     $it->product_name,
-                    (int)   ($live->system_qty ?? 0),
+                    (float) ($live->system_qty ?? 0),
                     (float) ($live->avg_cost   ?? 0),
                     $it->physical_qty,
                     '',
@@ -568,10 +579,12 @@ class StockReconciliationController extends Controller
         DB::beginTransaction();
         try {
             foreach ($items as $it) {
-                $sys  = (int)($it->system_qty ?? 0);
-                $real = (int)$it->physical_qty;
+                $sys  = (float) ($it->system_qty ?? 0);
+                $real = (float) $it->physical_qty;
                 $diff = $real - $sys;
-                if ($diff === 0) continue;
+                if (abs($diff) < 1e-9) {
+                    continue;
+                }
 
                 $productId = (int)$it->product_id;
 
@@ -677,7 +690,7 @@ class StockReconciliationController extends Controller
 
                         foreach ($layers as $ly) {
                             if ($need <= 0) break;
-                            $avail = (int)($ly->{$qtyCol} ?? 0);
+                            $avail = (float) ($ly->{$qtyCol} ?? 0);
                             if ($avail <= 0) continue;
 
                             $take = min($need, $avail);

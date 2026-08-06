@@ -61,9 +61,6 @@ class PurchaseController extends Controller
             ->when($r->to, function ($qq, $v) {
                 $qq->whereDate('purchases.order_date', '<=', $v);
             })
-            ->when($r->store_location_id, function ($qq, $v) {
-                $qq->where('purchases.store_location_id', $v);
-            })
             ->when($search !== '', function ($qq) use ($search) {
                 $qq->where(function ($sub) use ($search) {
                     $sub->where('purchases.purchase_number', 'like', "%{$search}%")
@@ -73,6 +70,8 @@ class PurchaseController extends Controller
                 });
             })
             ->orderByDesc('purchases.id');
+
+        $this->applySaleStoreScope($q, $r, 'purchases.store_location_id');
 
         $p = $q->paginate($perPage)->appends($r->query());
 

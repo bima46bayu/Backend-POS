@@ -22,7 +22,7 @@ return new class extends Migration {
             // WASTE | SPOILED | EXPIRED | DAMAGED | OTHER
             $t->string('reason', 20)->index();
 
-            $t->unsignedInteger('qty');
+            $t->decimal('qty', 16, 4);
             $t->decimal('unit_cost', 16, 2)->default(0);
             $t->decimal('total_cost', 18, 2)->default(0);
 

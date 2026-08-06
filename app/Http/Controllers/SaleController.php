@@ -30,9 +30,20 @@ class SaleController extends Controller
 
         // List screens (web History, mobile Riwayat) do not need line items;
         // skipping them avoids PHP memory exhaustion on large pages.
-        $relations = $r->boolean('without_items')
-            ? ['cashier', 'storeLocation', 'payments']
-            : ['items.product', 'cashier', 'storeLocation', 'payments'];
+        // Always constrain relation columns — full Product rows (description, etc.)
+        // routinely truncate JSON under the shared host memory limit.
+        $withoutItems = $r->boolean('without_items');
+        $relations = [
+            'cashier:id,name',
+            'storeLocation:id,code,name,address,phone,logo_url',
+            'payments:id,sale_id,method,amount,reference',
+        ];
+        if (! $withoutItems) {
+            $relations = array_merge([
+                'items:id,sale_id,product_id,qty,unit_price,discount_nominal,net_unit_price,line_total,discount_id,discount_name,discount_kind,discount_value',
+                'items.product:id,name,sku,category_id,sub_category_id,price',
+            ], $relations);
+        }
 
         $q = Sale::with($relations)->latest('id');
 
@@ -75,13 +86,11 @@ class SaleController extends Controller
         * 📄 PAGINATION
         * ============================== */
 
-        // Hard cap at 200. The list endpoint eager-loads items.product, cashier,
-        // storeLocation, and payments per row, so any larger page can exhaust
-        // the 128 MB PHP memory limit during JSON serialization
-        // (LengthAwarePaginator::toJson). Clients that need more rows must
-        // paginate.
+        // Hard caps: with line items+product, keep pages small so JSON serialization
+        // stays under the host memory limit. Clients that need more must paginate.
         $perPage = (int) ($r->per_page ?? 10);
-        $perPage = max(1, min(200, $perPage));
+        $maxPerPage = $withoutItems ? 200 : 50;
+        $perPage = max(1, min($maxPerPage, $perPage));
 
         return response()->json(
             $q->paginate($perPage)

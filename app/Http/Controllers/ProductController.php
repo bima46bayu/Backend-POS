@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use App\Models\Product;
+use App\Models\StoreLocation;
 use App\Models\Unit;
 use App\Http\Requests\UpdateProductRequest;
 use Illuminate\Support\Str;
@@ -14,9 +15,66 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\UploadedFile;
 use App\Services\InventoryService;
+use App\Services\RecipeService;
 
 class ProductController extends Controller
 {
+    /**
+     * Next SKU for a store: SK-{storeCode}-001
+     * GET /api/products/next-sku?store_location_id=
+     */
+    public function nextSku(Request $req)
+    {
+        $data = $req->validate([
+            'store_location_id' => 'nullable|integer|exists:store_locations,id',
+        ]);
+
+        $user = $req->user();
+        $storeId = $data['store_location_id'] ?? $user->store_location_id;
+        $storeId = $storeId !== null ? (int) $storeId : null;
+
+        if ($storeId !== null) {
+            $this->authorizeStoreAccess($user, $storeId);
+        } elseif (! $user->isAdmin()) {
+            abort(422, 'store_location_id is required');
+        }
+
+        return response()->json([
+            'sku' => $this->generateNextSku($storeId),
+        ]);
+    }
+
+    /**
+     * Format: SK-{CODE}-001 (3+ digit sequence per store code).
+     */
+    private function generateNextSku(?int $storeLocationId): string
+    {
+        $code = 'GEN';
+        if ($storeLocationId) {
+            $storeCode = StoreLocation::where('id', $storeLocationId)->value('code');
+            if (is_string($storeCode) && trim($storeCode) !== '') {
+                $code = trim($storeCode);
+            }
+        }
+
+        $code = strtoupper($code);
+        $prefix = 'SK-'.$code.'-';
+
+        $existing = DB::table('products')
+            ->where('sku', 'like', $prefix.'%')
+            ->pluck('sku');
+
+        $max = 0;
+        $pattern = '/^'.preg_quote($prefix, '/').'(\d+)$/i';
+        foreach ($existing as $sku) {
+            if (preg_match($pattern, (string) $sku, $m)) {
+                $max = max($max, (int) $m[1]);
+            }
+        }
+
+        return $prefix.str_pad((string) ($max + 1), 3, '0', STR_PAD_LEFT);
+    }
+
     /**
      * Simpan file ke public/uploads/products dan
      * KEMBALIKAN path relatif: /uploads/products/<uuid>.<ext>
@@ -62,7 +120,12 @@ class ProductController extends Controller
      */
     public function index(Request $request)
     {
-        $q = Product::query()->with('storeLocation:id,name');
+        $q = Product::query()->with([
+            'storeLocation:id,name',
+            'category:id,name',
+            'subCategory:id,name',
+            'unit:id,name',
+        ]);
 
         // ===============================
         // 1) Role-based store scope
@@ -198,8 +261,40 @@ class ProductController extends Controller
 
         $p = $q->paginate($perPage)->appends($request->query());
 
+        $items = $p->items();
+
+        // POS / catalog: attach how many recipe products can be made from current ingredient stock
+        $withMake =
+            $storeId
+            && (
+                $request->boolean('exclude_recipe_ingredients')
+                || $request->boolean('with_available_to_make')
+            )
+            && Schema::hasTable('product_recipes');
+
+        if ($withMake && $items !== []) {
+            $ids = array_map(
+                static fn ($row) => (int) (is_array($row) ? ($row['id'] ?? 0) : $row->id),
+                $items
+            );
+            $makeMap = app(RecipeService::class)->availableToMakeMap($ids, $storeId);
+
+            foreach ($items as $row) {
+                $id = (int) (is_array($row) ? ($row['id'] ?? 0) : $row->id);
+                if (isset($makeMap[$id])) {
+                    $row->has_recipe = true;
+                    $row->available_to_make = $makeMap[$id]['qty'];
+                    $row->recipe_bottleneck = $makeMap[$id]['bottleneck'];
+                } else {
+                    $row->has_recipe = false;
+                    $row->available_to_make = null;
+                    $row->recipe_bottleneck = null;
+                }
+            }
+        }
+
         return response()->json([
-            'items' => $p->items(),
+            'items' => $items,
             'meta'  => [
                 'current_page' => $p->currentPage(),
                 'per_page'     => $p->perPage(),
@@ -277,23 +372,47 @@ class ProductController extends Controller
                     $inventoryType = 'stock';
                 }
 
-                // 3) Buat produk
-                $productId = DB::table('products')->insertGetId([
-                    'sku'               => $data['sku'] ?? null,
-                    'name'              => $data['name'],
-                    'price'             => $data['price'],
-                    'category_id'       => $data['category_id'] ?? null,
-                    'sub_category_id'   => $data['sub_category_id'] ?? null,
-                    'description'       => $data['description'] ?? null,
-                    'unit_id'           => $unitId,
-                    'image_url'         => $imagePath,
-                    'stock'             => 0, // ⬅️ kolom stock akan disinkron dari layers kalau tipe stock
-                    'inventory_type'    => $inventoryType,
-                    'store_location_id' => $storeLocationId,
-                    'created_by'        => $user->id,
-                    'created_at'        => now(),
-                    'updated_at'        => now(),
-                ]);
+                // 2d) SKU: pakai input, atau auto SK-{storeCode}-001
+                $sku = trim((string) ($data['sku'] ?? ''));
+                if ($sku === '') {
+                    $sku = $this->generateNextSku($storeLocationId ? (int) $storeLocationId : null);
+                }
+
+                // 3) Buat produk (retry singkat jika race unique SKU)
+                $productId = null;
+                for ($attempt = 0; $attempt < 5; $attempt++) {
+                    try {
+                        $productId = DB::table('products')->insertGetId([
+                            'sku'               => $sku,
+                            'name'              => $data['name'],
+                            'price'             => $data['price'],
+                            'category_id'       => $data['category_id'] ?? null,
+                            'sub_category_id'   => $data['sub_category_id'] ?? null,
+                            'description'       => $data['description'] ?? null,
+                            'unit_id'           => $unitId,
+                            'image_url'         => $imagePath,
+                            'stock'             => 0, // ⬅️ kolom stock akan disinkron dari layers kalau tipe stock
+                            'inventory_type'    => $inventoryType,
+                            'store_location_id' => $storeLocationId,
+                            'created_by'        => $user->id,
+                            'created_at'        => now(),
+                            'updated_at'        => now(),
+                        ]);
+                        break;
+                    } catch (QueryException $e) {
+                        $isUnique = ($e->errorInfo[1] ?? null) === 1062
+                            || str_contains(strtolower($e->getMessage()), 'unique')
+                            || str_contains(strtolower($e->getMessage()), 'duplicate');
+                        if (! $isUnique || $attempt === 4) {
+                            throw $e;
+                        }
+                        $sku = $this->generateNextSku($storeLocationId ? (int) $storeLocationId : null);
+                    }
+                }
+
+                if ($productId === null) {
+                    abort(500, 'Failed to create product');
+                }
 
                 // 4) Stok awal (jika ada) — HANYA untuk produk inventory_type = stock
                 $initQty = (float) ($data['stock'] ?? 0);

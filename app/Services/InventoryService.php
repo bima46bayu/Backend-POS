@@ -53,7 +53,7 @@ class InventoryService
         }
 
         DB::table('products')->where('id', $productId)->update([
-            'stock'      => (int) self::sumQtyRemaining($productId, $storeId),
+            'stock'      => self::sumQtyRemaining($productId, $storeId),
             'updated_at' => now(),
         ]);
     }

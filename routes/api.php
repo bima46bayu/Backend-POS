@@ -124,6 +124,7 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
     Route::prefix('products')->group(function () {
         Route::get('/', [ProductController::class, 'index']);
         Route::get('/search', [ProductController::class, 'search']);
+        Route::get('/next-sku', [ProductController::class, 'nextSku']);
         Route::get('/{product}', [ProductController::class, 'show'])->whereNumber('product');
     });
 
