@@ -11,6 +11,7 @@ class Sale extends Model
 
     protected $fillable = [
         'code',
+        'client_uuid',
         'cashier_id',
         'store_location_id',
         'customer_name',
@@ -40,6 +41,13 @@ class Sale extends Model
         'discount_name',
         'discount_kind',
         'discount_value',
+
+        // offline sync (mobile POS)
+        'is_offline',
+        'offline_created_at',
+        'synced_at',
+        'stock_shortfall',
+        'needs_review',
     ];
 
     protected $casts = [
@@ -58,6 +66,13 @@ class Sale extends Model
         'change'                       => 'float',
 
         'additional_charges_snapshot'  => 'array',
+
+        // offline sync
+        'is_offline'                   => 'boolean',
+        'needs_review'                 => 'boolean',
+        'offline_created_at'           => 'datetime',
+        'synced_at'                    => 'datetime',
+        'stock_shortfall'              => 'array',
     ];
 
     /* ================= RELATIONS ================= */

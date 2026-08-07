@@ -133,6 +133,13 @@ class InventoryService
         $saleUnit   = (float)$p['sale_unit_price'];
         $eps        = 1e-9;
 
+        /*
+         | Offline sales: the customer already paid before we could verify stock,
+         | so consume whatever layers exist and let the caller record the gap
+         | instead of blowing up the whole transaction.
+         */
+        $allowShortfall = (bool) ($p['allow_shortfall'] ?? false);
+
         // ❗ Tambahan: cek product dan tipe inventory
         $product = Product::find($productId);
         if (!$product) {
@@ -193,7 +200,7 @@ class InventoryService
             $need -= $take;
         }
 
-        if ($need > $eps) {
+        if ($need > $eps && ! $allowShortfall) {
             throw new RuntimeException(
                 "FIFO: Stok cabang tidak cukup untuk product={$product->name}, sisa_need={$need}"
             );
