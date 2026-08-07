@@ -50,6 +50,16 @@ Route::options('{any}', fn () => response()->noContent())->where('any', '.*');
 Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
 
+/*
+ | Reachability probe for the mobile POS offline mode.
+ | Intentionally public and DB-free: the client only needs to know whether the
+ | API host answers, not whether its own token is still valid.
+ */
+Route::get('/ping', fn () => response()->json([
+    'ok'   => true,
+    'time' => now()->toIso8601String(),
+]));
+
 Route::prefix('store-locations')->group(function () {
     Route::get('/{id}/logo', [StoreLocationController::class, 'logo'])->whereNumber('id');
 });

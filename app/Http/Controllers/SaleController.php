@@ -117,17 +117,48 @@ class SaleController extends Controller
 
         $this->authorizeStoreAccess($user, (int) $storeId);
 
+        /* =====================================================
+        * OFFLINE SYNC — IDEMPOTENCY
+        * Sale yang dibuat offline dikirim ulang sampai sukses. Kalau uuid-nya
+        * sudah pernah masuk, balikin sale yang ada (JANGAN buat dobel).
+        * ===================================================== */
+        $clientUuid = $request->input('client_uuid');
+        $isOffline  = $request->boolean('offline');
+
+        if ($clientUuid && Schema::hasColumn('sales', 'client_uuid')) {
+            $existing = Sale::where('client_uuid', $clientUuid)->first();
+            if ($existing) {
+                return response()->json(
+                    $existing->load(['items.product', 'payments', 'cashier', 'storeLocation']),
+                    200
+                );
+            }
+        }
+
+        /* =====================================================
+        * REGISTER
+        * Sale offline bisa nyampe SETELAH register ditutup (kasir tutup shift
+        * sambil masih ada antrian sync). Selama sale-nya memang dibuat waktu
+        * register itu masih kebuka, tetap kita terima.
+        * ===================================================== */
         $openRegister = RegisterSession::where('cashier_id', $user->id)
             ->where('store_location_id', $storeId)
             ->whereNull('closed_at')
             ->latest('opened_at')
             ->first();
 
+        if (!$openRegister && $isOffline && $request->filled('register_session_id')) {
+            $openRegister = RegisterSession::where('id', $request->input('register_session_id'))
+                ->where('cashier_id', $user->id)
+                ->where('store_location_id', $storeId)
+                ->first();
+        }
+
         if (!$openRegister) {
             abort(422, 'Register belum dibuka. Silakan buka register terlebih dahulu.');
         }
 
-        return DB::transaction(function () use ($request, $user, $storeId) {
+        return DB::transaction(function () use ($request, $user, $storeId, $clientUuid, $isOffline) {
 
             $itemsInput = $request->items ?? [];
             if (empty($itemsInput)) {
@@ -193,6 +224,10 @@ class SaleController extends Controller
             $subtotal = 0.0;
             $saleItemsPayload = [];
 
+            // Offline: uang sudah diterima customer, jadi kekurangan stok dicatat
+            // (bukan bikin sale gagal). Manager review lewat flag needs_review.
+            $stockShortfall = [];
+
             foreach ($itemsInput as $row) {
                 $product = $products[$row['product_id']] ?? null;
                 if (!$product) abort(422, "Product {$row['product_id']} tidak ditemukan");
@@ -209,7 +244,19 @@ class SaleController extends Controller
                 } elseif ($product->isStockTracked()) {
                     $available = InventoryService::sumQtyRemaining($product->id, (int) $storeId);
                     if ($available < $qty) {
-                        abort(422, "Stok {$product->name} tidak cukup (tersisa {$available})");
+                        if (! $isOffline) {
+                            abort(422, "Stok {$product->name} tidak cukup (tersisa {$available})");
+                        }
+
+                        // Offline sale: terima, tapi catat minusnya.
+                        $stockShortfall[] = [
+                            'product_id'   => (int) $product->id,
+                            'product_name' => $product->name,
+                            'qty_sold'     => $qty,
+                            'qty_available' => (float) $available,
+                            'shortfall'    => round($qty - (float) $available, 4),
+                            'kind'         => 'PRODUCT',
+                        ];
                     }
                 }
 
@@ -341,10 +388,20 @@ class SaleController extends Controller
                 ];
             }
 
-            $recipeService->validateIngredientStock(
-                $recipeService->aggregateIngredientNeeds($recipesByProduct, $recipeLineQty),
-                (int) $storeId
+            $ingredientNeeds = $recipeService->aggregateIngredientNeeds(
+                $recipesByProduct,
+                $recipeLineQty
             );
+
+            if ($isOffline) {
+                // Jangan tolak — uang sudah masuk. Catat kekurangannya.
+                $stockShortfall = array_merge(
+                    $stockShortfall,
+                    $recipeService->collectIngredientShortfall($ingredientNeeds, (int) $storeId)
+                );
+            } else {
+                $recipeService->validateIngredientStock($ingredientNeeds, (int) $storeId);
+            }
 
             /* =====================================================
             * GLOBAL DISCOUNT
@@ -452,14 +509,35 @@ class SaleController extends Controller
             /* =====================================================
             * SAVE SALE
             * ===================================================== */
-            $seq = Sale::whereDate('created_at', now())
+            /*
+             | Offline sale keeps the time the customer actually paid, so it lands
+             | in the right day/report/register instead of the sync time.
+             */
+            $soldAt = $isOffline && $request->filled('offline_created_at')
+                ? \Carbon\Carbon::parse($request->input('offline_created_at'))
+                : now();
+
+            // Guard against a wrong device clock producing future-dated sales.
+            if ($soldAt->greaterThan(now())) {
+                $soldAt = now();
+            }
+
+            $seq = Sale::whereDate('created_at', $soldAt->toDateString())
                 ->lockForUpdate()
                 ->count() + 1;
 
-            $code = 'POS-' . now()->format('Ymd') . '-' . str_pad($seq, 4, '0', STR_PAD_LEFT);
+            $code = 'POS-' . $soldAt->format('Ymd') . '-' . str_pad($seq, 4, '0', STR_PAD_LEFT);
+
+            // Sequence bisa tabrakan kalau ada sale offline nyusul di tanggal yang
+            // sama. Kode wajib unique, jadi geser sampai bebas.
+            while (Sale::where('code', $code)->exists()) {
+                $seq++;
+                $code = 'POS-' . $soldAt->format('Ymd') . '-' . str_pad($seq, 4, '0', STR_PAD_LEFT);
+            }
 
             $sale = Sale::create([
                 'code'              => $code,
+                'client_uuid'       => $clientUuid,
                 'cashier_id'        => $user->id,
                 'store_location_id' => $storeId,
                 'customer_name'     => $request->customer_name ?? 'General',
@@ -485,7 +563,24 @@ class SaleController extends Controller
                 'paid'              => $paid,
                 'change'            => $change,
                 'status'            => 'completed',
+
+                // offline sync metadata
+                'is_offline'         => $isOffline,
+                'offline_created_at' => $isOffline ? $soldAt : null,
+                'synced_at'          => $isOffline ? now() : null,
+                'stock_shortfall'    => $stockShortfall === [] ? null : $stockShortfall,
+                'needs_review'       => $stockShortfall !== [],
             ]);
+
+            /*
+             | Backdate ke waktu transaksi asli supaya laporan harian & summary
+             | register menaruhnya di shift yang benar. created_at bukan fillable,
+             | jadi harus di-set terpisah dari mass assignment di atas.
+             */
+            if ($isOffline && ! $soldAt->equalTo($sale->created_at)) {
+                $sale->created_at = $soldAt;
+                $sale->saveQuietly();
+            }
 
             /* =====================================================
             * SAVE ITEMS + FIFO + STOCK LEDGER (CARA KEMARIN)
@@ -513,7 +608,8 @@ class SaleController extends Controller
                             (int) $line->ingredient_product_id,
                             $ingredientQty,
                             $item->id,
-                            0.0
+                            0.0,
+                            $isOffline
                         );
                     }
                 } elseif ($product && $product->isStockTracked()) {
@@ -525,7 +621,8 @@ class SaleController extends Controller
                         (int) $item->product_id,
                         (float) $item->qty,
                         $item->id,
-                        (float) $item->net_unit_price
+                        (float) $item->net_unit_price,
+                        $isOffline
                     );
                 }
             }
@@ -721,7 +818,8 @@ class SaleController extends Controller
         int $productId,
         float $qty,
         int $saleItemId,
-        float $saleUnitPrice
+        float $saleUnitPrice,
+        bool $allowShortfall = false
     ): void {
         if ($qty <= 0) {
             return;
@@ -735,6 +833,7 @@ class SaleController extends Controller
             'sale_item_id'      => $saleItemId,
             'sale_unit_price'   => $saleUnitPrice,
             'user_id'           => $user->id,
+            'allow_shortfall'   => $allowShortfall,
         ]);
 
         $consQuery = DB::table('inventory_consumptions')

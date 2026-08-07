@@ -27,6 +27,16 @@ class StoreSaleRequest extends FormRequest
         return [
             'customer_name'           => 'nullable|string|max:100',
 
+            /*
+             | Offline sync (mobile POS)
+             | client_uuid = idempotency key. Resending the same uuid returns the
+             | sale that was already created instead of charging twice.
+             */
+            'client_uuid'             => 'nullable|uuid',
+            'offline'                 => 'nullable|boolean',
+            'offline_created_at'      => 'nullable|date',
+            'register_session_id'     => 'nullable|integer|exists:register_sessions,id',
+
             // Items
             'items'                   => 'required|array|min:1',
             'items.*.product_id'      => 'required|integer|exists:products,id',

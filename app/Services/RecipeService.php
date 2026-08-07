@@ -99,6 +99,41 @@ class RecipeService
     }
 
     /**
+     * Same check as validateIngredientStock() but never aborts.
+     *
+     * Used for offline sales that are being synced: the customer already paid,
+     * so we record the sale and report which ingredients went short instead of
+     * rejecting it.
+     *
+     * @return array<int, array<string, mixed>> shortfall rows
+     */
+    public function collectIngredientShortfall(array $ingredientNeeds, int $storeId): array
+    {
+        $shortfall = [];
+
+        foreach ($ingredientNeeds as $productId => $needQty) {
+            $product = Product::find($productId);
+            if (! $product || ! $product->isStockTracked()) {
+                continue;
+            }
+
+            $available = InventoryService::sumQtyRemaining((int) $productId, $storeId);
+            if ($available + 1e-9 < (float) $needQty) {
+                $shortfall[] = [
+                    'product_id'    => (int) $productId,
+                    'product_name'  => $product->name,
+                    'qty_sold'      => (float) $needQty,
+                    'qty_available' => (float) $available,
+                    'shortfall'     => round((float) $needQty - (float) $available, 4),
+                    'kind'          => 'INGREDIENT',
+                ];
+            }
+        }
+
+        return $shortfall;
+    }
+
+    /**
      * How many finished units can be made from current ingredient stock (FIFO layers).
      *
      * @param  array<int>  $productIds
