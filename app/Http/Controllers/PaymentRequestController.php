@@ -10,6 +10,8 @@ use Illuminate\Support\Facades\URL;
 
 class PaymentRequestController extends Controller
 {
+    use Concerns\AuthorizesStoreAccess;
+
     /* ===================== INDEX ===================== */
     public function index(Request $request)
     {
@@ -21,30 +23,23 @@ class PaymentRequestController extends Controller
             ->withSum('items as total_discount', 'deduction')
             ->withSum('items as total_transfer', 'transfer_amount');
 
-        // ===============================
-        // WAJIB FILTER STORE (SEMUA ROLE)
-        // ===============================
+        // Prefer explicit store picker (store_id / store_location_id).
+        // Do NOT fall back to "all stores" for HQ — require a store like other ops.
+        $storeId = null;
+        if ($request->filled('store_id') || $request->filled('store_location_id')) {
+            $storeId = $this->resolveStoreIdFromRequest($request);
+        } elseif ($user->store_location_id) {
+            $storeId = (int) $user->store_location_id;
+            $this->authorizeStoreAccess($user, $storeId);
+        }
 
-        $storeId = $request->input('store_id') 
-            ?? $user->store_location_id;
-
-        if (!$storeId) {
-            // bisa pilih salah satu:
-
-            // return kosong
+        if (! $storeId) {
             $q->whereRaw('1 = 0');
-
-            // atau kalau mau strict:
-            // abort(403, 'Store location not specified');
         } else {
             $q->where('store_location_id', $storeId);
         }
 
-        // ===============================
-        // PAGINATION
-        // ===============================
         $perPage = (int) $request->get('per_page', 10);
-
         $prs = $q->latest()->paginate($perPage);
 
         return response()->json($prs);
@@ -56,21 +51,31 @@ class PaymentRequestController extends Controller
     {
         $user = $request->user();
 
-        if (!$user->store_location_id) {
-            return response()->json([
-                'message' => 'User belum memiliki store location'
-            ], 422);
-        }
-
         $data = $request->validate([
             'main_bank_account_id' => ['required', 'exists:bank_accounts,id'],
             'currency' => ['required', 'string', 'max:10'],
+            'store_location_id' => ['nullable', 'integer', 'exists:store_locations,id'],
+            'store_id' => ['nullable', 'integer', 'exists:store_locations,id'],
         ]);
 
-        // otomatis dari user login
-        $data['store_location_id'] = $user->store_location_id;
+        $storeId = $this->resolveStoreIdFromRequest(
+            $request,
+            isset($data['store_location_id'])
+                ? (int) $data['store_location_id']
+                : (isset($data['store_id']) ? (int) $data['store_id'] : null)
+        );
 
-        $pr = PaymentRequest::create($data);
+        if (! $storeId) {
+            return response()->json([
+                'message' => 'store_location_id wajib. Pilih cabang terlebih dahulu.',
+            ], 422);
+        }
+
+        $pr = PaymentRequest::create([
+            'main_bank_account_id' => $data['main_bank_account_id'],
+            'currency' => $data['currency'],
+            'store_location_id' => $storeId,
+        ]);
 
         return response()->json($pr, 201);
     }
@@ -90,9 +95,7 @@ class PaymentRequestController extends Controller
             ])
             ->findOrFail($id);
 
-        if ($pr->store_location_id !== $user->store_location_id) {
-            abort(403);
-        }
+        $this->authorizeStoreAccess($user, (int) $pr->store_location_id);
 
         return response()->json($pr);
     }
@@ -105,9 +108,7 @@ class PaymentRequestController extends Controller
 
         $pr = PaymentRequest::findOrFail($id);
 
-        if ($pr->store_location_id !== $user->store_location_id) {
-            abort(403);
-        }
+        $this->authorizeStoreAccess($user, (int) $pr->store_location_id);
 
         $pr->delete();
 

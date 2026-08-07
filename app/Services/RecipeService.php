@@ -97,4 +97,91 @@ class RecipeService
             }
         }
     }
+
+    /**
+     * How many finished units can be made from current ingredient stock (FIFO layers).
+     *
+     * @param  array<int>  $productIds
+     * @return array<int, array{qty:int, bottleneck:?string}> keyed by finished product_id
+     */
+    public function availableToMakeMap(array $productIds, int $storeId): array
+    {
+        $recipes = $this->loadActiveForProducts($productIds, $storeId);
+        if ($recipes->isEmpty()) {
+            return [];
+        }
+
+        $ingredientIds = [];
+        foreach ($recipes as $recipe) {
+            foreach ($recipe->items as $line) {
+                $ingredientIds[] = (int) $line->ingredient_product_id;
+            }
+        }
+        $ingredientIds = array_values(array_unique(array_filter($ingredientIds)));
+
+        $stockByIngredient = [];
+        if ($ingredientIds !== []) {
+            if (\Illuminate\Support\Facades\Schema::hasTable('inventory_layers')) {
+                $rows = \Illuminate\Support\Facades\DB::table('inventory_layers')
+                    ->selectRaw('product_id, COALESCE(SUM(qty_remaining), 0) as qty')
+                    ->where('store_location_id', $storeId)
+                    ->whereIn('product_id', $ingredientIds)
+                    ->groupBy('product_id')
+                    ->get();
+                foreach ($rows as $row) {
+                    $stockByIngredient[(int) $row->product_id] = (float) $row->qty;
+                }
+            } else {
+                foreach ($ingredientIds as $ingId) {
+                    $stockByIngredient[$ingId] = InventoryService::sumQtyRemaining($ingId, $storeId);
+                }
+            }
+        }
+
+        $out = [];
+        foreach ($recipes as $productId => $recipe) {
+            if ($recipe->items->isEmpty()) {
+                continue;
+            }
+
+            $minMake = null;
+            $bottleneck = null;
+
+            foreach ($recipe->items as $line) {
+                $ingId = (int) $line->ingredient_product_id;
+                $ingName = $line->ingredient?->name ?? ('#'.$ingId);
+
+                try {
+                    $needPer = $this->lineQtyInStockUnit($line);
+                } catch (\Throwable $e) {
+                    $minMake = 0;
+                    $bottleneck = $ingName;
+                    break;
+                }
+
+                if ($needPer <= 1e-12) {
+                    continue;
+                }
+
+                $available = (float) ($stockByIngredient[$ingId] ?? 0.0);
+                $can = (int) floor($available / $needPer + 1e-12);
+
+                if ($minMake === null || $can < $minMake) {
+                    $minMake = $can;
+                    $bottleneck = $ingName;
+                }
+            }
+
+            if ($minMake === null) {
+                continue;
+            }
+
+            $out[(int) $productId] = [
+                'qty' => max(0, $minMake),
+                'bottleneck' => $bottleneck,
+            ];
+        }
+
+        return $out;
+    }
 }

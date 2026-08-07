@@ -40,7 +40,7 @@ class StockService
     {
         DB::transaction(function () use ($p) {
             foreach ($p['items'] as $it) {
-                $need      = (int)$it['qty'];
+                $need      = (float)$it['qty'];
                 $pid       = (int)$it['product_id'];
                 $sellPrice = (float)($it['unit_price'] ?? 0);
 
@@ -54,9 +54,9 @@ class StockService
                     ->get(['id', 'product_id', 'qty_remaining', 'unit_cost', 'unit_landed_cost', 'store_location_id']);
 
                 foreach ($layers as $ly) {
-                    if ($need <= 0) break;
+                    if ($need <= 1e-9) break;
 
-                    $take = min($need, (int)$ly->qty_remaining);
+                    $take = min($need, (float)$ly->qty_remaining);
                     $cost = (float)($ly->unit_cost ?? $ly->unit_landed_cost ?? 0);
 
                     // Kurangi layer
@@ -99,7 +99,7 @@ class StockService
 
                 // Kurangi agregat stock product
                 DB::table('products')->where('id', $pid)->update([
-                    'stock'      => DB::raw('stock - ' . (int)$it['qty']),
+                    'stock'      => DB::raw('stock - ' . (float)$it['qty']),
                     'updated_at' => now(),
                 ]);
             }
@@ -115,7 +115,7 @@ class StockService
             ]);
             if (!$ly) return;
 
-            $remain = (int)$ly->qty_remaining;
+            $remain = (float)$ly->qty_remaining;
             if ($remain > 0) {
                 $cost = (float)($ly->unit_cost ?? $ly->unit_landed_cost ?? 0);
 
@@ -145,8 +145,8 @@ class StockService
     private function addInboundLayer(array $p): ?int
     {
         $pid = (int)($p['product_id'] ?? 0);
-        $qty = max(0, (int)($p['qty'] ?? 0));
-        if ($pid <= 0 || $qty <= 0) return null;
+        $qty = max(0, (float)($p['qty'] ?? 0));
+        if ($pid <= 0 || $qty <= 1e-9) return null;
 
         $cols = Schema::getColumnListing('inventory_layers');
 

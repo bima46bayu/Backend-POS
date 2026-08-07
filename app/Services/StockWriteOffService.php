@@ -19,18 +19,18 @@ use RuntimeException;
 class StockWriteOffService
 {
     /**
-     * @param array{product_id:int,qty:int,reason:string,store_location_id:int,user_id?:int|null,note?:string|null} $p
+     * @param array{product_id:int,qty:float,reason:string,store_location_id:int,user_id?:int|null,note?:string|null} $p
      */
     public function record(array $p): StockWriteOff
     {
         $productId = (int) $p['product_id'];
         $storeId = (int) $p['store_location_id'];
-        $qty = (int) $p['qty'];
+        $qty = (float) $p['qty'];
         $reason = strtoupper((string) $p['reason']);
         $userId = $p['user_id'] ?? null;
         $note = $p['note'] ?? null;
 
-        if ($qty <= 0) {
+        if ($qty <= 1e-9) {
             throw new RuntimeException('Qty harus lebih dari 0.');
         }
 
@@ -80,7 +80,7 @@ class StockWriteOffService
     protected function consumeFifo(
         int $productId,
         int $storeId,
-        int $qty,
+        float $qty,
         string $reason,
         ?int $userId,
         ?string $note,

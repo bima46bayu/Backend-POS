@@ -102,7 +102,7 @@ class StockWriteOffController extends Controller
         $data = $r->validate([
             'store_location_id' => ['required', 'integer', 'exists:store_locations,id'],
             'product_id' => ['required', 'integer', 'exists:products,id'],
-            'qty' => ['required', 'integer', 'min:1'],
+            'qty' => ['required', 'numeric', 'gt:0'],
             'reason' => ['required', 'string', Rule::in(StockWriteOff::REASONS)],
             'note' => ['nullable', 'string', 'max:255'],
         ]);
@@ -114,7 +114,7 @@ class StockWriteOffController extends Controller
         try {
             $writeOff = $this->service->record([
                 'product_id' => (int) $data['product_id'],
-                'qty' => (int) $data['qty'],
+                'qty' => (float) $data['qty'],
                 'reason' => $data['reason'],
                 'store_location_id' => $storeId,
                 'user_id' => $user?->id,
