@@ -16,6 +16,10 @@ class Sale extends Model
         'store_location_id',
         'customer_name',
 
+        // member / loyalty
+        'member_id',
+        'points_earned',
+
         // core numbers
         'subtotal',
         'discount',
@@ -67,6 +71,8 @@ class Sale extends Model
 
         'additional_charges_snapshot'  => 'array',
 
+        'points_earned'                => 'integer',
+
         // offline sync
         'is_offline'                   => 'boolean',
         'needs_review'                 => 'boolean',
@@ -95,6 +101,11 @@ class Sale extends Model
     public function storeLocation()
     {
         return $this->belongsTo(StoreLocation::class, 'store_location_id');
+    }
+
+    public function member()
+    {
+        return $this->belongsTo(Member::class, 'member_id');
     }
 
     public function discountMaster()

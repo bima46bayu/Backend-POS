@@ -28,6 +28,13 @@ class StoreSaleRequest extends FormRequest
             'customer_name'           => 'nullable|string|max:100',
 
             /*
+             | Member (customer database). Only the id is accepted — the points
+             | earned are computed server-side from the sale total, never sent by
+             | the client.
+             */
+            'member_id'               => 'nullable|integer|exists:members,id',
+
+            /*
              | Offline sync (mobile POS)
              | client_uuid = idempotency key. Resending the same uuid returns the
              | sale that was already created instead of charging twice.

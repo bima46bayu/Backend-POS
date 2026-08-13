@@ -11,6 +11,7 @@ use App\Http\Controllers\CoaController;
 use App\Http\Controllers\DiscountController;
 use App\Http\Controllers\GoodsReceiptController;
 use App\Http\Controllers\InventoryController;
+use App\Http\Controllers\MemberController;
 use App\Http\Controllers\PayeeController;
 use App\Http\Controllers\PaymentRequestController;
 use App\Http\Controllers\PaymentRequestItemController;
@@ -220,6 +221,15 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
             ->whereNumber('product_option_group');
     });
 
+    /*
+    | Members (customer database) — read/lookup for cashier at checkout.
+    | Point settings are read-only here so the POS can show "poin didapat".
+    */
+    Route::prefix('members')->group(function () {
+        Route::get('/lookup', [MemberController::class, 'lookup']);
+        Route::get('/settings/points', [MemberController::class, 'settings']);
+    });
+
     Route::get('product-recipes', [ProductRecipeController::class, 'index']);
 
     /*
@@ -330,6 +340,25 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
                 ->whereNumber('product_option_group');
             Route::delete('/{product_option_group}', [ProductOptionGroupController::class, 'destroy'])
                 ->whereNumber('product_option_group');
+        });
+
+        /*
+        | Members (customer database) — management CRUD + point settings.
+        | Static segments are declared BEFORE /{member} so "next-code" and
+        | "settings" are never swallowed by the numeric binding.
+        */
+        Route::prefix('members')->group(function () {
+            Route::get('/', [MemberController::class, 'index']);
+            Route::get('/next-code', [MemberController::class, 'nextCode']);
+            Route::match(['put', 'patch'], '/settings/points', [MemberController::class, 'updateSettings']);
+
+            Route::post('/', [MemberController::class, 'store']);
+            Route::get('/{member}', [MemberController::class, 'show'])->whereNumber('member');
+            Route::match(['put', 'patch'], '/{member}', [MemberController::class, 'update'])->whereNumber('member');
+            Route::delete('/{member}', [MemberController::class, 'destroy'])->whereNumber('member');
+
+            Route::get('/{member}/points', [MemberController::class, 'pointHistory'])->whereNumber('member');
+            Route::post('/{member}/points', [MemberController::class, 'adjustPoints'])->whereNumber('member');
         });
 
         Route::apiResource('bank-accounts', BankAccountController::class);

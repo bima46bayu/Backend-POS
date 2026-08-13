@@ -13,12 +13,14 @@ use App\Models\SalePayment;
 use App\Models\Product;
 use App\Models\Discount;
 use App\Models\AdditionalCharge;
+use App\Models\Member;
 use App\Models\ProductOptionValue;
 use App\Models\RegisterSession;
 
 use Illuminate\Support\Facades\Schema;
 
 use App\Services\InventoryService;
+use App\Services\LoyaltyService;
 use App\Services\RecipeService;
 
 class SaleController extends Controller
@@ -158,7 +160,29 @@ class SaleController extends Controller
             abort(422, 'Register belum dibuka. Silakan buka register terlebih dahulu.');
         }
 
-        return DB::transaction(function () use ($request, $user, $storeId, $clientUuid, $isOffline) {
+        /* =====================================================
+        * MEMBER (customer database)
+        * Member dimiliki grup toko induk, jadi kartu dari cabang lain dalam
+        * satu induk tetap valid — tapi member dari grup LAIN ditolak.
+        * ===================================================== */
+        $memberId = null;
+        if ($request->filled('member_id')) {
+            $member = Member::find($request->input('member_id'));
+
+            if (! $member) {
+                abort(422, 'Member tidak ditemukan.');
+            }
+            if (! $member->is_active) {
+                abort(422, "Member {$member->code} sudah tidak aktif.");
+            }
+            if ((int) $member->store_location_id !== Member::ownerStoreId((int) $storeId)) {
+                abort(422, 'Member ini bukan milik grup toko yang sama.');
+            }
+
+            $memberId = (int) $member->id;
+        }
+
+        return DB::transaction(function () use ($request, $user, $storeId, $clientUuid, $isOffline, $memberId) {
 
             $itemsInput = $request->items ?? [];
             if (empty($itemsInput)) {
@@ -541,6 +565,7 @@ class SaleController extends Controller
                 'cashier_id'        => $user->id,
                 'store_location_id' => $storeId,
                 'customer_name'     => $request->customer_name ?? 'General',
+                'member_id'         => $memberId,
 
                 'subtotal'          => $subtotal,
 
@@ -636,8 +661,16 @@ class SaleController extends Controller
                 ]);
             }
 
+            /* =====================================================
+            * LOYALTY POINTS
+            * Dihitung dari total final yang sudah tersimpan (bukan kiriman
+            * client). Idempotent lewat unique (sale_id, type) di ledger, jadi
+            * sale offline yang di-sync ulang tidak dobel poin.
+            * ===================================================== */
+            LoyaltyService::awardForSale($sale, $user->id);
+
             return response()->json(
-                $sale->load(['items.product', 'payments', 'cashier', 'storeLocation']),
+                $sale->load(['items.product', 'payments', 'cashier', 'storeLocation', 'member']),
                 201
             );
         });
@@ -760,9 +793,18 @@ class SaleController extends Controller
             // 5) Status sale
             $sale->update(['status' => 'void']);
 
+            /*
+             | 6) Tarik kembali poin member.
+             | Membalik jumlah yang tercatat di ledger, BUKAN hitung ulang dari
+             | rate sekarang — kalau rate-nya sudah diubah admin, hitung ulang
+             | akan salah.
+             */
+            $revoked = LoyaltyService::revokeForSale($sale, auth()->id());
+
             return response()->json([
-                'message' => 'Sale voided',
-                'sale'    => $sale->fresh(['items.product', 'payments', 'cashier'])
+                'message'        => 'Sale voided',
+                'points_revoked' => $revoked,
+                'sale'           => $sale->fresh(['items.product', 'payments', 'cashier', 'member'])
             ]);
         });
     }
