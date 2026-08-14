@@ -203,7 +203,6 @@ class SaleController extends Controller
 
             $recipeService = app(RecipeService::class);
             $recipesByProduct = $recipeService->loadActiveForProducts($productIds, (int) $storeId);
-            $recipeLineQty = [];
 
             /* =====================================================
             * PRELOAD DISCOUNTS (ITEM + GLOBAL)
@@ -237,7 +236,7 @@ class SaleController extends Controller
 
             $optionValueMap = $optionValueIds === []
                 ? collect()
-                : ProductOptionValue::with('group')
+                : ProductOptionValue::with(['group.ingredient.unit', 'qtyDeltaUnit'])
                     ->whereIn('id', array_unique($optionValueIds))
                     ->get()
                     ->keyBy('id');
@@ -252,6 +251,10 @@ class SaleController extends Controller
             // (bukan bikin sale gagal). Manager review lewat flag needs_review.
             $stockShortfall = [];
 
+            // Ingredient needs are built per cart line so two Dawets with different
+            // ice options don't cancel each other out when summed by product_id.
+            $ingredientNeeds = [];
+
             foreach ($itemsInput as $row) {
                 $product = $products[$row['product_id']] ?? null;
                 if (!$product) abort(422, "Product {$row['product_id']} tidak ditemukan");
@@ -264,7 +267,7 @@ class SaleController extends Controller
                 }
 
                 if ($recipesByProduct->has($product->id)) {
-                    $recipeLineQty[$product->id] = ($recipeLineQty[$product->id] ?? 0) + $qty;
+                    // Recipe stock is validated after options are resolved (below).
                 } elseif ($product->isStockTracked()) {
                     $available = InventoryService::sumQtyRemaining($product->id, (int) $storeId);
                     if ($available < $qty) {
@@ -287,6 +290,7 @@ class SaleController extends Controller
                 /* ---------- ITEM OPTIONS (sugar level, ice level, dll) ---------- */
                 $optionsSnapshot = [];
                 $optionsPrice    = 0.0;
+                $selectedOptionValues = [];
 
                 $rawOptionIds = array_values(array_unique(array_map(
                     fn ($v) => (int) $v,
@@ -327,13 +331,22 @@ class SaleController extends Controller
 
                         $delta = round((float) $val->price_delta, 2);
                         $optionsPrice += $delta;
+                        $selectedOptionValues[] = $val;
 
                         $optionsSnapshot[] = [
-                            'group_id'    => (int) $group->id,
-                            'group'       => $group->name,
-                            'value_id'    => (int) $val->id,
-                            'name'        => $val->name,
-                            'price_delta' => $delta,
+                            'group_id'               => (int) $group->id,
+                            'group'                  => $group->name,
+                            'value_id'               => (int) $val->id,
+                            'name'                   => $val->name,
+                            'price_delta'            => $delta,
+                            'qty_delta'              => (float) ($val->qty_delta ?? 0),
+                            'qty_delta_unit_id'      => $val->qty_delta_unit_id
+                                ? (int) $val->qty_delta_unit_id
+                                : null,
+                            'qty_delta_unit'         => $val->qtyDeltaUnit?->name,
+                            'ingredient_product_id'  => $group->ingredient_product_id
+                                ? (int) $group->ingredient_product_id
+                                : null,
                         ];
                     }
                 }
@@ -352,6 +365,20 @@ class SaleController extends Controller
                 }
 
                 $optionsPrice = round(max(0.0, $optionsPrice), 2);
+
+                $qtyDeltas = $recipeService->qtyDeltasFromOptions($selectedOptionValues);
+                $recipe = $recipesByProduct->get($product->id);
+
+                if ($recipe || $qtyDeltas !== []) {
+                    $lineNeeds = $recipeService->ingredientNeedsForSaleLine(
+                        $recipe,
+                        (float) $qty,
+                        $qtyDeltas
+                    );
+                    foreach ($lineNeeds as $ingId => $needQty) {
+                        $ingredientNeeds[$ingId] = ($ingredientNeeds[$ingId] ?? 0.0) + $needQty;
+                    }
+                }
 
                 $basePrice = (float)($row['unit_price'] ?? $product->price);
                 $unitPrice = round($basePrice + $optionsPrice, 2);
@@ -400,6 +427,9 @@ class SaleController extends Controller
                     'options'          => $optionsSnapshot === [] ? null : $optionsSnapshot,
                     'options_price'    => $optionsPrice,
 
+                    // Used only while consuming stock in this request (not a DB column).
+                    '_qty_deltas'      => $qtyDeltas,
+
                     // 🔥 SNAPSHOT DISKON ITEM
                     'discount_id'      => $disc?->id,
                     'discount_name'    => $disc?->name,
@@ -411,11 +441,6 @@ class SaleController extends Controller
                     'line_total'       => round($netLine, 2),
                 ];
             }
-
-            $ingredientNeeds = $recipeService->aggregateIngredientNeeds(
-                $recipesByProduct,
-                $recipeLineQty
-            );
 
             if ($isOffline) {
                 // Jangan tolak — uang sudah masuk. Catat kekurangannya.
@@ -613,25 +638,30 @@ class SaleController extends Controller
             $inv = app(InventoryService::class);
 
             foreach ($saleItemsPayload as $payload) {
+                $qtyDeltas = $payload['_qty_deltas'] ?? [];
+                unset($payload['_qty_deltas']);
+
                 $payload['sale_id'] = $sale->id;
                 $item = SaleItem::create($payload);
 
                 $product = $products[$item->product_id] ?? null;
                 $recipe = $recipesByProduct->get($item->product_id);
 
-                if ($recipe) {
-                    foreach ($recipe->items as $line) {
-                        $ingredientQty = $recipeService->stockQtyForSale(
-                            $line,
-                            (float) $item->qty
-                        );
+                if ($recipe || $qtyDeltas !== []) {
+                    $lineNeeds = $recipeService->ingredientNeedsForSaleLine(
+                        $recipe,
+                        (float) $item->qty,
+                        $qtyDeltas
+                    );
+
+                    foreach ($lineNeeds as $ingredientId => $ingredientQty) {
                         $this->consumeSaleInventory(
                             $inv,
                             $sale,
                             $storeId,
                             $user,
-                            (int) $line->ingredient_product_id,
-                            $ingredientQty,
+                            (int) $ingredientId,
+                            (float) $ingredientQty,
                             $item->id,
                             0.0,
                             $isOffline

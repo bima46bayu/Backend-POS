@@ -62,25 +62,121 @@ class RecipeService
      * Aggregate ingredient qty required for a cart (product_id => total qty needed).
      *
      * @param  array<int, float>  $lineQtyByProduct  finished product_id => sold qty
+     * @param  array<int, array<int, float>>  $optionDeltasByProduct
+     *         finished product_id => [ingredient_product_id => qty_delta per finished unit]
+     *         Signed: +5 more ice, -10 no ice. Applied after the recipe base, floored at 0.
      * @return array<int, float>  ingredient_product_id => total qty in stock units
      */
-    public function aggregateIngredientNeeds(Collection $recipesByProduct, array $lineQtyByProduct): array
-    {
+    public function aggregateIngredientNeeds(
+        Collection $recipesByProduct,
+        array $lineQtyByProduct,
+        array $optionDeltasByProduct = []
+    ): array {
         $needs = [];
 
         foreach ($lineQtyByProduct as $productId => $soldQty) {
-            $recipe = $recipesByProduct->get((int) $productId);
-            if (! $recipe) {
-                continue;
-            }
+            $productId = (int) $productId;
+            $soldQty = (float) $soldQty;
+            $recipe = $recipesByProduct->get($productId);
+            $deltas = $optionDeltasByProduct[$productId] ?? [];
 
-            foreach ($recipe->items as $line) {
-                $pid = (int) $line->ingredient_product_id;
-                $needs[$pid] = ($needs[$pid] ?? 0.0) + $this->stockQtyForSale($line, (float) $soldQty);
+            $lineNeeds = $this->ingredientNeedsForSaleLine($recipe, $soldQty, $deltas);
+
+            foreach ($lineNeeds as $ingId => $qty) {
+                $needs[$ingId] = ($needs[$ingId] ?? 0.0) + $qty;
             }
         }
 
         return $needs;
+    }
+
+    /**
+     * Ingredient consumption for one finished sale line (stock units), after
+     * applying option qty deltas on top of the recipe.
+     *
+     * @param  array<int, float>  $qtyDeltasPerUnit  ingredient_id => signed delta per 1 finished
+     * @return array<int, float>  ingredient_id => total qty to consume for this line
+     */
+    public function ingredientNeedsForSaleLine(
+        ?ProductRecipe $recipe,
+        float $finishedQtySold,
+        array $qtyDeltasPerUnit = []
+    ): array {
+        $needs = [];
+        $applied = [];
+
+        if ($recipe) {
+            foreach ($recipe->items as $line) {
+                $ingId = (int) $line->ingredient_product_id;
+                $base = $this->stockQtyForSale($line, $finishedQtySold);
+                $delta = ((float) ($qtyDeltasPerUnit[$ingId] ?? 0)) * $finishedQtySold;
+                $qty = max(0.0, $base + $delta);
+                $applied[$ingId] = true;
+
+                if ($qty > 1e-9) {
+                    $needs[$ingId] = ($needs[$ingId] ?? 0.0) + $qty;
+                }
+            }
+        }
+
+        // Option pointed at an ingredient the recipe does not list → add it.
+        foreach ($qtyDeltasPerUnit as $ingId => $deltaPerUnit) {
+            $ingId = (int) $ingId;
+            if (isset($applied[$ingId])) {
+                continue;
+            }
+
+            $qty = max(0.0, ((float) $deltaPerUnit) * $finishedQtySold);
+            if ($qty > 1e-9) {
+                $needs[$ingId] = ($needs[$ingId] ?? 0.0) + $qty;
+            }
+        }
+
+        return $needs;
+    }
+
+    /**
+     * Collapse selected option values into per-ingredient qty deltas in the
+     * ingredient's **stock unit** (so they can be added to recipe needs).
+     *
+     * qty_delta may be entered in Ml while stock is L — converted here, same
+     * as product recipe lines.
+     *
+     * @param  iterable<ProductOptionValue>  $selectedValues
+     * @return array<int, float> ingredient_product_id => signed qty_delta (stock unit)
+     */
+    public function qtyDeltasFromOptions(iterable $selectedValues): array
+    {
+        $deltas = [];
+
+        foreach ($selectedValues as $val) {
+            $group = $val->group ?? null;
+            if (! $group || ! $group->ingredient_product_id) {
+                continue;
+            }
+
+            $raw = (float) ($val->qty_delta ?? 0);
+            if (abs($raw) < 1e-12) {
+                continue;
+            }
+
+            $ingredient = $group->ingredient;
+            $stockUnit = $ingredient?->unit;
+            $fromUnit = $val->qtyDeltaUnit ?? $stockUnit;
+
+            if ($stockUnit && $fromUnit) {
+                try {
+                    $raw = UnitConversionService::convert($raw, $fromUnit, $stockUnit);
+                } catch (\InvalidArgumentException $e) {
+                    abort(422, $e->getMessage());
+                }
+            }
+
+            $ingId = (int) $group->ingredient_product_id;
+            $deltas[$ingId] = ($deltas[$ingId] ?? 0.0) + $raw;
+        }
+
+        return $deltas;
     }
 
     public function validateIngredientStock(array $ingredientNeeds, int $storeId): void

@@ -13,12 +13,15 @@ class ProductOptionValue extends Model
         'product_option_group_id',
         'name',
         'price_delta',
+        'qty_delta',
+        'qty_delta_unit_id',
         'is_active',
         'sort_order',
     ];
 
     protected $casts = [
         'price_delta' => 'float',
+        'qty_delta'   => 'float',
         'is_active'   => 'boolean',
         'sort_order'  => 'integer',
     ];
@@ -26,5 +29,11 @@ class ProductOptionValue extends Model
     public function group()
     {
         return $this->belongsTo(ProductOptionGroup::class, 'product_option_group_id');
+    }
+
+    /** Unit the cashier-facing qty_delta is entered in (Ml, Gram, …). */
+    public function qtyDeltaUnit()
+    {
+        return $this->belongsTo(Unit::class, 'qty_delta_unit_id');
     }
 }
