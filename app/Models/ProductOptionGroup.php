@@ -14,6 +14,7 @@ class ProductOptionGroup extends Model
 
     protected $fillable = [
         'store_location_id',
+        'ingredient_product_id',
         'name',
         'selection_type',
         'is_required',
@@ -37,6 +38,15 @@ class ProductOptionGroup extends Model
     public function storeLocation()
     {
         return $this->belongsTo(StoreLocation::class, 'store_location_id');
+    }
+
+    /**
+     * Stock product this group adjusts in the recipe (Ice, Sugar, …).
+     * Null = price-only group; qty_delta on values is ignored.
+     */
+    public function ingredient()
+    {
+        return $this->belongsTo(Product::class, 'ingredient_product_id');
     }
 
     public function products()

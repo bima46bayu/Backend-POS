@@ -18,7 +18,13 @@ class ProductOptionGroupController extends Controller
     {
         $storeId = $this->resolveStoreIdFromRequest($request);
 
-        $q = ProductOptionGroup::query()->with('values')->withCount('products');
+        $q = ProductOptionGroup::query()
+            ->with([
+                'values.qtyDeltaUnit:id,name',
+                'ingredient:id,name,sku,unit_id',
+                'ingredient.unit:id,name',
+            ])
+            ->withCount('products');
 
         if ($storeId !== null) {
             $q->where('store_location_id', $storeId);
@@ -43,7 +49,7 @@ class ProductOptionGroupController extends Controller
         );
 
         return response()->json([
-            'data' => $productOptionGroup->load('values'),
+            'data' => $productOptionGroup->load(['values.qtyDeltaUnit', 'ingredient.unit']),
         ]);
     }
 
@@ -66,18 +72,19 @@ class ProductOptionGroupController extends Controller
 
         return DB::transaction(function () use ($data, $storeId) {
             $group = ProductOptionGroup::create([
-                'store_location_id' => $storeId,
-                'name'              => $data['name'],
-                'selection_type'    => $data['selection_type'] ?? ProductOptionGroup::SELECTION_SINGLE,
-                'is_required'       => $data['is_required'] ?? false,
-                'is_active'         => $data['is_active'] ?? true,
-                'sort_order'        => $data['sort_order'] ?? 0,
+                'store_location_id'     => $storeId,
+                'ingredient_product_id' => $data['ingredient_product_id'] ?? null,
+                'name'                  => $data['name'],
+                'selection_type'        => $data['selection_type'] ?? ProductOptionGroup::SELECTION_SINGLE,
+                'is_required'           => $data['is_required'] ?? false,
+                'is_active'             => $data['is_active'] ?? true,
+                'sort_order'            => $data['sort_order'] ?? 0,
             ]);
 
             $this->syncValues($group, $data['values'] ?? []);
 
             return response()->json([
-                'data' => $group->load('values'),
+                'data' => $group->load(['values.qtyDeltaUnit', 'ingredient.unit']),
             ], 201);
         });
     }
@@ -107,6 +114,10 @@ class ProductOptionGroupController extends Controller
             if (array_key_exists('is_active', $data)) {
                 $productOptionGroup->is_active = (bool) $data['is_active'];
             }
+            // Explicit null clears the ingredient link (price-only group again).
+            if (array_key_exists('ingredient_product_id', $data)) {
+                $productOptionGroup->ingredient_product_id = $data['ingredient_product_id'];
+            }
 
             $productOptionGroup->save();
 
@@ -116,7 +127,7 @@ class ProductOptionGroupController extends Controller
             }
 
             return response()->json([
-                'data' => $productOptionGroup->load('values'),
+                'data' => $productOptionGroup->load(['values.qtyDeltaUnit', 'ingredient.unit']),
             ]);
         });
     }
@@ -234,6 +245,7 @@ class ProductOptionGroupController extends Controller
 
         return $request->validate([
             'store_location_id'      => 'nullable|integer|exists:store_locations,id',
+            'ingredient_product_id'  => 'nullable|integer|exists:products,id',
             'name'                   => $required . '|string|max:100',
             'selection_type'         => 'nullable|in:SINGLE,MULTI',
             'is_required'            => 'nullable|boolean',
@@ -244,6 +256,8 @@ class ProductOptionGroupController extends Controller
             'values.*.id'            => 'nullable|integer',
             'values.*.name'          => 'required|string|max:100',
             'values.*.price_delta'   => 'nullable|numeric',
+            'values.*.qty_delta'     => 'nullable|numeric',
+            'values.*.qty_delta_unit_id' => 'nullable|integer|exists:units,id',
             'values.*.is_active'     => 'nullable|boolean',
             'values.*.sort_order'    => 'nullable|integer|min:0',
         ]);
@@ -258,10 +272,14 @@ class ProductOptionGroupController extends Controller
 
         foreach (array_values($values) as $i => $row) {
             $payload = [
-                'name'        => $row['name'],
-                'price_delta' => round((float) ($row['price_delta'] ?? 0), 2),
-                'is_active'   => array_key_exists('is_active', $row) ? (bool) $row['is_active'] : true,
-                'sort_order'  => $row['sort_order'] ?? $i,
+                'name'              => $row['name'],
+                'price_delta'       => round((float) ($row['price_delta'] ?? 0), 2),
+                'qty_delta'         => round((float) ($row['qty_delta'] ?? 0), 4),
+                'qty_delta_unit_id' => ! empty($row['qty_delta_unit_id'])
+                    ? (int) $row['qty_delta_unit_id']
+                    : null,
+                'is_active'         => array_key_exists('is_active', $row) ? (bool) $row['is_active'] : true,
+                'sort_order'        => $row['sort_order'] ?? $i,
             ];
 
             $existing = ! empty($row['id'])
