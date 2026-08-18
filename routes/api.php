@@ -156,6 +156,12 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
         Route::get('/summary', [StockWriteOffController::class, 'summary']);
         Route::get('/', [StockWriteOffController::class, 'index']);
         Route::post('/', [StockWriteOffController::class, 'store']);
+        Route::put('/{stock_write_off}', [StockWriteOffController::class, 'update'])
+            ->whereNumber('stock_write_off');
+        Route::post('/{stock_write_off}/submit', [StockWriteOffController::class, 'submit'])
+            ->whereNumber('stock_write_off');
+        Route::delete('/{stock_write_off}', [StockWriteOffController::class, 'destroy'])
+            ->whereNumber('stock_write_off');
     });
 
     /*
