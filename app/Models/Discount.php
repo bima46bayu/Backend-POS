@@ -16,4 +16,9 @@ class Discount extends Model
         'active',
         'store_location_id',
     ];
+
+    public function storeLocation()
+    {
+        return $this->belongsTo(StoreLocation::class);
+    }
 }

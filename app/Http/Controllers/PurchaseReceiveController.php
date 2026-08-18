@@ -24,12 +24,21 @@ class PurchaseReceiveController extends Controller
             return response()->json(['message'=>'PO must be approved'],422);
         }
 
-        $items = $purchase->items()->with('product:id,sku,name')->get()->map(function($pi){
+        $items = $purchase->items()->with([
+            'product:id,sku,name,image_url,unit_id',
+            'product.unit:id,name',
+        ])->get()->map(function ($pi) {
             $remaining = $pi->qty_order - $pi->qty_received;
+            $product = $pi->product;
             return [
                 'purchase_item_id'     => $pi->id,
                 'product_id'           => $pi->product_id,
-                'product_label'        => $pi->product ? "{$pi->product->sku} - {$pi->product->name}" : null,
+                'sku'                  => $product?->sku,
+                'product_name'         => $product?->name,
+                'product_label'        => $product ? "{$product->sku} - {$product->name}" : null,
+                'image_url'            => $product?->image_url,
+                'unit_id'              => $product?->unit_id,
+                'unit_name'            => $product?->unit?->name ?? $product?->unit_name,
                 'qty_order'            => $pi->qty_order,
                 'qty_received_so_far'  => $pi->qty_received,
                 'qty_remaining'        => $remaining,

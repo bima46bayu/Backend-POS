@@ -11,13 +11,15 @@ class DiscountController extends Controller
     {
         $r->validate([
             'scope' => 'nullable|in:GLOBAL,ITEM,global,item',
+            'kind' => 'nullable|in:PERCENT,FIXED,percent,fixed',
             'active' => 'nullable|in:0,1',
             'store_location_id' => 'nullable|integer',
+            'exact_store' => 'nullable|boolean',
             'q' => 'nullable|string|max:100',
             'per_page' => 'nullable|integer|min:1|max:200',
         ]);
 
-        $q = Discount::query();
+        $q = Discount::query()->with('storeLocation:id,code,name');
 
         // search by name
         if ($r->filled('q')) {
@@ -35,12 +37,20 @@ class DiscountController extends Controller
             $q->where('active', (int)$r->active);
         }
 
-        // filter store: include NULL (global) + store spesifik (untuk dropdown POS biasanya begini)
+        if ($r->filled('kind')) {
+            $q->where('kind', strtoupper($r->kind));
+        }
+
+        // POS: NULL (unscoped) + this store. Admin list: this store only.
         if ($r->filled('store_location_id')) {
-            $sid = (int)$r->store_location_id;
-            $q->where(function ($qq) use ($sid) {
-                $qq->whereNull('store_location_id')->orWhere('store_location_id', $sid);
-            });
+            $sid = (int) $r->store_location_id;
+            if ($r->boolean('exact_store')) {
+                $q->where('store_location_id', $sid);
+            } else {
+                $q->where(function ($qq) use ($sid) {
+                    $qq->whereNull('store_location_id')->orWhere('store_location_id', $sid);
+                });
+            }
         }
 
         $q->orderBy('active', 'desc')->orderBy('name');
