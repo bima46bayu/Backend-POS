@@ -22,6 +22,10 @@ return new class extends Migration {
             }
         });
 
+        if (DB::getDriverName() !== 'mysql') {
+            return;
+        }
+
         // 2) Drop FK aneh bernama `1` kalau ada (beberapa server bikin nama FK buruk)
         $weirdFk = DB::selectOne("
             SELECT CONSTRAINT_NAME
@@ -69,6 +73,10 @@ return new class extends Migration {
 
     public function down(): void
     {
+        if (DB::getDriverName() !== 'mysql') {
+            return;
+        }
+
         // Helper drop FK if exists
         $dropFkIfExists = function (string $name) {
             $exists = DB::selectOne("
@@ -89,7 +97,7 @@ return new class extends Migration {
         $dropFkIfExists('products_created_by_fk');
         $dropFkIfExists('1'); // just in case
 
-        // (opsional) drop index & kolom — sesuaikan kebijakan rollback kamu
+        // (opsional) drop index & kolom â€” sesuaikan kebijakan rollback kamu
         Schema::table('products', function (Blueprint $table) {
             if (Schema::hasColumn('products', 'store_location_id')) {
                 // drop index jika ada

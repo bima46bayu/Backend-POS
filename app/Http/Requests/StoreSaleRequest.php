@@ -26,6 +26,8 @@ class StoreSaleRequest extends FormRequest
     {
         return [
             'customer_name'           => 'nullable|string|max:100',
+            // Person the order is for. Not the customer type (that is customer_name).
+            'buyer_name'              => 'nullable|string|max:100',
 
             /*
              | Member (customer database). Only the id is accepted — the points
@@ -68,7 +70,7 @@ class StoreSaleRequest extends FormRequest
 
             // Payments
             'payments'                => 'required|array|min:1',
-            'payments.*.method'       => 'required|in:cash,card,ewallet,transfer,QRIS',
+            'payments.*.method'       => 'required|in:cash,card,ewallet,transfer,QRIS,POINTS',
             'payments.*.amount'       => 'required|numeric|min:0.01',
             'payments.*.reference'    => 'nullable|string|max:100',
         ];
@@ -92,7 +94,7 @@ class StoreSaleRequest extends FormRequest
         return [
             'items.required'      => 'Items tidak boleh kosong.',
             'payments.required'   => 'Payments minimal 1 data.',
-            'payments.*.method.in'=> 'Metode pembayaran harus salah satu dari: cash, card, ewallet, transfer, QRIS.',
+            'payments.*.method.in'=> 'Metode pembayaran harus salah satu dari: cash, card, ewallet, transfer, QRIS, POINTS.',
         ];
     }
 }

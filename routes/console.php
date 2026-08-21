@@ -10,3 +10,11 @@ Artisan::command('inspire', function () {
 
 // Hapus token expired setiap hari
 Schedule::command('sanctum:prune-expired --hours=24')->daily();
+
+// Reservasi reward yang lewat batas waktu harus dibatalkan agar poin member
+// dikembalikan. Tanpa ini poin tetap tertahan di reservasi PENDING selamanya,
+// dan stok reward ikut tertahan. Jalan tiap 10 menit karena expiry-nya
+// berskala menit, bukan harian.
+Schedule::command('rewards:expire-reservations')
+    ->everyTenMinutes()
+    ->withoutOverlapping();

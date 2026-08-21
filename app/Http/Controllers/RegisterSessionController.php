@@ -293,7 +293,7 @@ class RegisterSessionController extends Controller
                 'id'           => $s->id,
                 'code'         => $s->code,
                 'date'         => $s->created_at?->toDateTimeString(),
-                'customer'     => $s->customer_name,
+                'customer'     => $s->customerLabel(),
                 'total'        => $s->final_total ?? $s->total ?? 0,
                 'status'       => $s->status,
                 'items'        => $items,

@@ -11,6 +11,10 @@ return new class extends Migration
      */
     public function up(): void
     {
+        if (Schema::hasTable('register_session_carts')) {
+            return;
+        }
+
         Schema::create('register_session_carts', function (Blueprint $table) {
             $table->id();
             $table->foreignId('register_session_id')

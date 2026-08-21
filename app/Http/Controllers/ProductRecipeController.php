@@ -6,7 +6,7 @@ use App\Models\Product;
 use App\Models\ProductRecipe;
 use App\Models\ProductRecipeItem;
 use App\Models\Unit;
-use App\Services\UnitConversionService;
+use App\Services\RecipeService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -195,6 +195,15 @@ class ProductRecipeController extends Controller
         return $unitId;
     }
 
+    /**
+     * Reject a line the POS could not convert at sale time.
+     *
+     * Delegates to RecipeService so save-time validation and sale-time
+     * consumption apply the SAME rule. This used to call
+     * UnitConversionService::convert() directly, which knows nothing about
+     * pack_size — so a Pack-stocked ingredient (sedotan) rejected "Pcs" here
+     * even though the POS could consume it perfectly well as 1/100 of a pack.
+     */
     protected function validateLineConversion(float $qty, int $recipeUnitId, Product $ingredient): void
     {
         $recipeUnit = Unit::find($recipeUnitId);
@@ -204,10 +213,12 @@ class ProductRecipeController extends Controller
             abort(422, 'Satuan resep atau satuan stok bahan tidak ditemukan.');
         }
 
-        try {
-            UnitConversionService::convert($qty, $recipeUnit, $productUnit);
-        } catch (\InvalidArgumentException $e) {
-            abort(422, $e->getMessage());
+        // Ensure the relation is loaded: convertToStockUnit() reads
+        // $ingredient->unit, which is null when the model was fetched lean.
+        if (! $ingredient->relationLoaded('unit')) {
+            $ingredient->setRelation('unit', $productUnit);
         }
+
+        app(RecipeService::class)->convertToStockUnit($qty, $recipeUnit, $ingredient);
     }
 }

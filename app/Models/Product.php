@@ -24,6 +24,9 @@ class Product extends Model
         'name',
         'description',
         'price',
+        'cost_price',
+        'pack_size',
+        'pack_label',
         'stock',
         'image_url',
         'store_location_id',
@@ -138,5 +141,76 @@ class Product extends Model
     public function isStockTracked(): bool
     {
         return $this->inventory_type === self::INVENTORY_TYPE_STOCK;
+    }
+
+    /**
+     * Cost basis for inventory valuation.
+     *
+     * Never falls back to `price`: `price` is what we SELL for, and using it as
+     * a cost makes COGS equal revenue. An unknown cost is 0.0 (visibly wrong,
+     * so it gets noticed) instead of plausibly wrong.
+     */
+    public function costBasis(): float
+    {
+        return (float) ($this->cost_price ?? 0);
+    }
+
+    /**
+     * How many small "contents" units fit inside ONE stock unit — e.g. a
+     * product stocked in Pack with pack_size 100 holds 100 straws per pack.
+     *
+     * Stock, cost and purchasing all stay in the stock unit (Pack). This value
+     * exists so a recipe can consume a fraction of a pack: 1 Batang = 1/100
+     * Pack. It is deliberately NOT a cost divisor — cost_price is already per
+     * stock unit, and dividing it again is what produced the 5000 -> 50 bug.
+     *
+     * A pack_size of 1 is meaningless (a pack of one = no pack), so it is
+     * treated as "no pack" to keep callers from dividing by a no-op.
+     */
+    public function packSize(): ?float
+    {
+        $size = $this->pack_size !== null ? (float) $this->pack_size : null;
+
+        if ($size === null || $size <= 1.0) {
+            return null;
+        }
+
+        return $size;
+    }
+
+    public function isPacked(): bool
+    {
+        return $this->packSize() !== null;
+    }
+
+    /**
+     * Convert a contents qty into stock units, for recipe consumption:
+     * 2 Batang of a 100-per-Pack product → 0.02 Pack.
+     *
+     * Falls through unchanged when the product has no pack_size, so callers can
+     * apply it unconditionally.
+     */
+    public function contentsToStockUnits(float $contentsQty): float
+    {
+        $size = $this->packSize();
+
+        return $size === null ? $contentsQty : $contentsQty / $size;
+    }
+
+    /** Inverse of contentsToStockUnits(): 0.02 Pack → 2 Batang. For display. */
+    public function stockUnitsToContents(float $stockQty): float
+    {
+        $size = $this->packSize();
+
+        return $size === null ? $stockQty : $stockQty * $size;
+    }
+
+    /**
+     * Cost of one contents unit (Rp 5.000 per Pack of 100 → Rp 50 per Batang).
+     * Derived for display/reporting only; the stored cost stays per stock unit.
+     */
+    public function costPerContentsUnit(): float
+    {
+        return $this->contentsToStockUnits(1.0) * $this->costBasis();
     }
 }

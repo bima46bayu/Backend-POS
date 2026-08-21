@@ -22,6 +22,11 @@ class UpdateProductRequest extends FormRequest
         return [
             'name'            => ['required', 'string', 'max:150'],
             'price'           => ['required', 'numeric', 'min:0'],
+            // Purchase/landed cost, separate from the sell price above.
+            'cost_price'      => ['nullable', 'numeric', 'min:0'],
+            // Pack purchasing: buy a Pack of 100, stock/sell per Pcs.
+            'pack_size'       => ['nullable', 'numeric', 'min:0'],
+            'pack_label'      => ['nullable', 'string', 'max:32'],
             'stock'           => ['nullable', 'integer', 'min:0'],
             'sku'             => [
                 'required',
@@ -58,6 +63,18 @@ class UpdateProductRequest extends FormRequest
 
             'price'           => $this->input('price') !== null && $this->input('price') !== ''
                 ? (float) str_replace(',', '.', $this->input('price'))
+                : null,
+
+            'cost_price'      => $this->input('cost_price') !== null && $this->input('cost_price') !== ''
+                ? (float) str_replace(',', '.', $this->input('cost_price'))
+                : null,
+
+            // pack_size <= 1 is a no-op divisor; normalise it away so nothing
+            // downstream has to special-case it.
+            'pack_size'       => $this->input('pack_size') !== null && $this->input('pack_size') !== ''
+                ? ((float) str_replace(',', '.', $this->input('pack_size')) > 1
+                    ? (float) str_replace(',', '.', $this->input('pack_size'))
+                    : null)
                 : null,
 
             'stock'           => $this->input('stock') !== null && $this->input('stock') !== ''

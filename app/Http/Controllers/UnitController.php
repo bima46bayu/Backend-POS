@@ -33,26 +33,14 @@ class UnitController extends Controller
         ]);
     }
 
-    public function store(Request $request)
+    public function store()
     {
-        $data = $request->validate([
-            'name' => [
-                'required',
-                'string',
-                'max:100',
-                'unique:units,name',
-            ],
-        ]);
-
-        $unit = Unit::create([
-            'name'      => $data['name'],
-            'is_system' => false, // yang dibuat user
-        ]);
-
+        // Units are a closed catalog (seeded system set + existing custom
+        // rows). Creating more from the UI produced units the conversion
+        // tables don't know about, so the catalog is now read-only.
         return response()->json([
-            'message' => 'Unit created',
-            'data'    => $unit,
-        ], 201);
+            'message' => 'Satuan tidak bisa ditambah. Gunakan satuan yang sudah ada.',
+        ], 422);
     }
 
     public function update(Request $request, Unit $unit)

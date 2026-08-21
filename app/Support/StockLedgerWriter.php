@@ -54,6 +54,9 @@ class StockLedgerWriter
         if (in_array('layer_id', $cols, true) && array_key_exists('layer_id', $p)) {
             $payload['layer_id'] = $p['layer_id'];
         }
+        if (in_array('user_id', $cols, true) && array_key_exists('user_id', $p)) {
+            $payload['user_id'] = $p['user_id'];
+        }
         if (in_array('note', $cols, true) && array_key_exists('note', $p)) {
             $payload['note'] = $p['note'];
         }

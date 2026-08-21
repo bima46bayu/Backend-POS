@@ -3,10 +3,16 @@
 namespace App\Services;
 
 use App\Models\AppSetting;
+use App\Models\LoyaltyReward;
 use App\Models\Member;
 use App\Models\MemberPointTransaction;
+use App\Models\Product;
+use App\Models\RewardReservation;
 use App\Models\Sale;
+use App\Models\SaleItem;
+use App\Models\SalePayment;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Loyalty points.
@@ -64,11 +70,11 @@ class LoyaltyService
         $rate = self::rate();
 
         return [
-            'enabled'          => self::enabled(),
+            'enabled' => self::enabled(),
             'points_per_amount' => $rate,
-            'rate_per_point'   => $rate,
-            'default_rate'     => self::DEFAULT_RATE,
-            'description'      => "Setiap belanja Rp " . number_format($rate, 0, ',', '.') . " mendapat 1 poin.",
+            'rate_per_point' => $rate,
+            'default_rate' => self::DEFAULT_RATE,
+            'description' => 'Setiap belanja Rp '.number_format($rate, 0, ',', '.').' mendapat 1 poin.',
         ];
     }
 
@@ -130,18 +136,18 @@ class LoyaltyService
             return 0;
         }
 
-        $rate   = self::rate();
+        $rate = self::rate();
         $amount = (float) ($sale->final_total > 0 ? $sale->final_total : $sale->total);
         $points = self::pointsFor($amount, $rate);
 
         // Still record the visit/spend even when the basket was too small to
         // earn a point — otherwise visit history silently loses transactions.
-        $member->total_spend         = (float) $member->total_spend + $amount;
-        $member->visit_count         = (int) $member->visit_count + 1;
+        $member->total_spend = (float) $member->total_spend + $amount;
+        $member->visit_count = (int) $member->visit_count + 1;
         $member->last_transaction_at = $sale->created_at ?? now();
 
         if ($points > 0) {
-            $member->points_balance      = (int) $member->points_balance + $points;
+            $member->points_balance = (int) $member->points_balance + $points;
             $member->points_earned_total = (int) $member->points_earned_total + $points;
         }
 
@@ -149,16 +155,16 @@ class LoyaltyService
 
         if ($points > 0) {
             MemberPointTransaction::create([
-                'member_id'         => $member->id,
-                'type'              => MemberPointTransaction::TYPE_EARN,
-                'points'            => $points,
-                'balance_after'     => (int) $member->points_balance,
-                'sale_id'           => $sale->id,
-                'amount'            => $amount,
-                'rate_per_point'    => $rate,
+                'member_id' => $member->id,
+                'type' => MemberPointTransaction::TYPE_EARN,
+                'points' => $points,
+                'balance_after' => (int) $member->points_balance,
+                'sale_id' => $sale->id,
+                'amount' => $amount,
+                'rate_per_point' => $rate,
                 'store_location_id' => $sale->store_location_id,
-                'user_id'           => $userId,
-                'note'              => 'Poin dari transaksi ' . $sale->code,
+                'user_id' => $userId,
+                'note' => 'Poin dari transaksi '.$sale->code,
             ]);
         }
 
@@ -218,16 +224,16 @@ class LoyaltyService
         $member->save();
 
         MemberPointTransaction::create([
-            'member_id'         => $member->id,
-            'type'              => MemberPointTransaction::TYPE_REVOKE,
-            'points'            => -$actual,
-            'balance_after'     => $newBalance,
-            'sale_id'           => $sale->id,
-            'amount'            => $earn->amount,
-            'rate_per_point'    => $earn->rate_per_point,
+            'member_id' => $member->id,
+            'type' => MemberPointTransaction::TYPE_REVOKE,
+            'points' => -$actual,
+            'balance_after' => $newBalance,
+            'sale_id' => $sale->id,
+            'amount' => $earn->amount,
+            'rate_per_point' => $earn->rate_per_point,
             'store_location_id' => $sale->store_location_id,
-            'user_id'           => $userId,
-            'note'              => 'Void transaksi ' . $sale->code,
+            'user_id' => $userId,
+            'note' => 'Void transaksi '.$sale->code,
         ]);
 
         $sale->points_earned = 0;
@@ -261,16 +267,270 @@ class LoyaltyService
             $locked->save();
 
             return MemberPointTransaction::create([
-                'member_id'         => $locked->id,
-                'type'              => MemberPointTransaction::TYPE_ADJUST,
-                'points'            => $applied,
-                'balance_after'     => $newBalance,
-                'amount'            => 0,
-                'rate_per_point'    => null,
+                'member_id' => $locked->id,
+                'type' => MemberPointTransaction::TYPE_ADJUST,
+                'points' => $applied,
+                'balance_after' => $newBalance,
+                'amount' => 0,
+                'rate_per_point' => null,
                 'store_location_id' => $storeLocationId,
-                'user_id'           => $userId,
-                'note'              => $note,
+                'user_id' => $userId,
+                'note' => $note,
             ]);
         });
+    }
+
+    /**
+     * Give back points spent on a Member Store sale that was voided.
+     *
+     * Redemptions are recorded as RESERVE (both the member app and the
+     * over-the-counter flow go through RewardReservationService). Older sales
+     * still carry the legacy REDEEM type, so both are accepted here.
+     */
+    public static function restoreRedeemForSale(Sale $sale, ?int $userId = null): int
+    {
+        if (! $sale->member_id) {
+            return 0;
+        }
+
+        $already = MemberPointTransaction::query()
+            ->where('sale_id', $sale->id)
+            ->whereIn('type', [
+                MemberPointTransaction::TYPE_REDEEM_VOID,
+                MemberPointTransaction::TYPE_RESERVE_VOID,
+            ])
+            ->exists();
+        if ($already) {
+            return 0;
+        }
+
+        $redeem = MemberPointTransaction::query()
+            ->where('sale_id', $sale->id)
+            ->whereIn('type', [
+                MemberPointTransaction::TYPE_REDEEM,
+                MemberPointTransaction::TYPE_RESERVE,
+            ])
+            ->first();
+        if (! $redeem) {
+            return 0;
+        }
+
+        // Keep the reservation consistent with the voided sale.
+        RewardReservation::where('sale_id', $sale->id)
+            ->where('status', RewardReservation::FULFILLED)
+            ->update([
+                'status' => RewardReservation::CANCELLED,
+                'resolved_at' => now(),
+                'resolved_by_user_id' => $userId,
+                'rejection_reason' => 'Sale '.$sale->code.' voided',
+            ]);
+
+        $cost = abs((int) $redeem->points);
+        if ($cost < 1) {
+            return 0;
+        }
+
+        $member = Member::query()->lockForUpdate()->find($sale->member_id);
+        if (! $member) {
+            return 0;
+        }
+
+        $member->points_balance = (int) $member->points_balance + $cost;
+        $member->points_spent_total = max(0, (int) $member->points_spent_total - $cost);
+        $member->save();
+
+        MemberPointTransaction::create([
+            'member_id' => $member->id,
+            'type' => MemberPointTransaction::TYPE_REDEEM_VOID,
+            'points' => $cost,
+            'balance_after' => (int) $member->points_balance,
+            'sale_id' => $sale->id,
+            'loyalty_reward_id' => $redeem->loyalty_reward_id,
+            'amount' => 0,
+            'rate_per_point' => null,
+            'store_location_id' => $sale->store_location_id,
+            'user_id' => $userId,
+            'note' => 'Void tukar poin '.$sale->code,
+        ]);
+
+        return $cost;
+    }
+
+    /**
+     * Issue the Rp 0 sale that backs a point redemption.
+     *
+     * Shared by both redemption paths: the cashier-side Member Store
+     * (`redeem()`, points and sale in one step) and the member-app reservation
+     * flow (points taken at reserve time, sale issued at fulfillment). Keeping
+     * one implementation is what guarantees stock, FIFO layers, the stock
+     * ledger and sales reporting stay consistent between the two.
+     *
+     * Caller is responsible for the surrounding transaction and for locking the
+     * member/reward rows. Aborts 422 on insufficient stock.
+     */
+    public static function issueRedeemSale(
+        Member $member,
+        LoyaltyReward $prize,
+        Product $product,
+        int $branchStoreId,
+        ?int $userId
+    ): Sale {
+        $qty = 1.0;
+        $recipeService = app(RecipeService::class);
+        $recipes = $recipeService->loadActiveForProducts([$product->id], $branchStoreId);
+        $recipe = $recipes->get($product->id);
+
+        if ($recipe) {
+            $needs = $recipeService->ingredientNeedsForSaleLine($recipe, $qty, []);
+            $short = $recipeService->collectIngredientShortfall($needs, $branchStoreId);
+            if ($short !== []) {
+                $first = $short[0];
+                $label = $first['product_name'] ?? 'bahan';
+                abort(422, "Stok {$label} tidak cukup untuk menukar {$product->name}.");
+            }
+        } elseif ($product->isStockTracked()) {
+            $available = InventoryService::sumQtyRemaining((int) $product->id, $branchStoreId);
+            if ($available + 1e-9 < $qty) {
+                abort(422, "Stok {$product->name} tidak cukup (tersisa {$available}).");
+            }
+        }
+
+        $code = self::nextSaleCode();
+        $sale = Sale::create([
+            'code' => $code,
+            'cashier_id' => $userId,
+            'store_location_id' => $branchStoreId,
+            'customer_name' => 'Member',
+            'buyer_name' => $member->name,
+            'member_id' => $member->id,
+            'subtotal' => 0,
+            'discount' => 0,
+            'grand_total' => 0,
+            'additional_charge_total' => 0,
+            'final_total' => 0,
+            'total' => 0,
+            'paid' => 0,
+            'change' => 0,
+            'status' => 'completed',
+            'points_earned' => 0,
+        ]);
+
+        $item = SaleItem::create([
+            'sale_id' => $sale->id,
+            'product_id' => $product->id,
+            'qty' => $qty,
+            'unit_price' => 0,
+            'discount_nominal' => 0,
+            'net_unit_price' => 0,
+            'line_total' => 0,
+        ]);
+
+        SalePayment::create([
+            'sale_id' => $sale->id,
+            'method' => 'POINTS',
+            'amount' => 0,
+            'reference' => 'redeem:'.$prize->id,
+        ]);
+
+        $inv = app(InventoryService::class);
+        $user = (object) ['id' => $userId];
+
+        if ($recipe) {
+            $needs = $recipeService->ingredientNeedsForSaleLine($recipe, $qty, []);
+            foreach ($needs as $ingredientId => $ingredientQty) {
+                self::consumeRedeemInventory(
+                    $inv,
+                    $sale,
+                    $branchStoreId,
+                    $user,
+                    (int) $ingredientId,
+                    (float) $ingredientQty,
+                    (int) $item->id
+                );
+            }
+        } elseif ($product->isStockTracked()) {
+            self::consumeRedeemInventory(
+                $inv,
+                $sale,
+                $branchStoreId,
+                $user,
+                (int) $product->id,
+                $qty,
+                (int) $item->id
+            );
+        }
+
+        return $sale;
+    }
+
+    private static function nextSaleCode(): string
+    {
+        $soldAt = now();
+        $seq = Sale::whereDate('created_at', $soldAt->toDateString())
+            ->lockForUpdate()
+            ->count() + 1;
+
+        $code = 'POS-'.$soldAt->format('Ymd').'-'.str_pad((string) $seq, 4, '0', STR_PAD_LEFT);
+        while (Sale::where('code', $code)->exists()) {
+            $seq++;
+            $code = 'POS-'.$soldAt->format('Ymd').'-'.str_pad((string) $seq, 4, '0', STR_PAD_LEFT);
+        }
+
+        return $code;
+    }
+
+    private static function consumeRedeemInventory(
+        InventoryService $inv,
+        Sale $sale,
+        int $storeId,
+        $user,
+        int $productId,
+        float $qty,
+        int $saleItemId
+    ): void {
+        if ($qty <= 0) {
+            return;
+        }
+
+        $inv->consumeFIFOWithPricing([
+            'product_id' => $productId,
+            'store_location_id' => $storeId,
+            'qty' => $qty,
+            'sale_id' => $sale->id,
+            'sale_item_id' => $saleItemId,
+            'sale_unit_price' => 0.0,
+            'user_id' => $user->id ?? null,
+            'allow_shortfall' => false,
+        ]);
+
+        if (Schema::hasTable('stock_ledger')) {
+            $consQuery = DB::table('inventory_consumptions')->where('product_id', $productId);
+            if (Schema::hasColumn('inventory_consumptions', 'sale_item_id')) {
+                $consQuery->where('sale_item_id', $saleItemId);
+            } else {
+                $consQuery->where('sale_id', $sale->id);
+            }
+
+            foreach ($consQuery->orderBy('id')->get(['layer_id', 'qty', 'unit_cost']) as $c) {
+                DB::table('stock_ledger')->insert([
+                    'product_id' => $productId,
+                    'store_location_id' => $storeId,
+                    'layer_id' => $c->layer_id,
+                    'user_id' => $user->id ?? null,
+                    'ref_type' => 'SALE',
+                    'ref_id' => $sale->id,
+                    'direction' => -1,
+                    'qty' => (float) $c->qty,
+                    'unit_cost' => (float) $c->unit_cost,
+                    'unit_price' => null,
+                    'subtotal_cost' => (float) $c->qty * (float) $c->unit_cost,
+                    'note' => "member store #{$sale->code}",
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
+        }
+
+        InventoryService::syncLegacyProductStock($productId, $storeId);
     }
 }

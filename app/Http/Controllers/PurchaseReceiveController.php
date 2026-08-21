@@ -14,8 +14,6 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Http\Request;
 use App\Services\InventoryService;
-use Illuminate\Support\Facades\Schema;
-
 class PurchaseReceiveController extends Controller
 {
     public function forReceipt(Purchase $purchase)
@@ -25,7 +23,7 @@ class PurchaseReceiveController extends Controller
         }
 
         $items = $purchase->items()->with([
-            'product:id,sku,name,image_url,unit_id',
+            'product:id,sku,name,image_url,unit_id,pack_size,pack_label',
             'product.unit:id,name',
         ])->get()->map(function ($pi) {
             $remaining = $pi->qty_order - $pi->qty_received;
@@ -43,6 +41,11 @@ class PurchaseReceiveController extends Controller
                 'qty_received_so_far'  => $pi->qty_received,
                 'qty_remaining'        => $remaining,
                 'unit_price'           => $pi->unit_price,
+                // Pack info is informational for the receiver: quantities on a PO
+                // are always in stock units, so showing "isi 100/Pack" lets them
+                // confirm that 5 packs really means the 500 they are typing.
+                'pack_size'            => $product?->pack_size,
+                'pack_label'           => $product?->pack_label,
             ];
         });
 
@@ -136,6 +139,9 @@ class PurchaseReceiveController extends Controller
                 $pi->qty_received += $qty;
                 $pi->save();
 
+                // Layer + stock_ledger + products.stock sync all happen inside
+                // the service. GR carries a real purchase price, so that is the
+                // cost basis here.
                 app(InventoryService::class)->addInboundLayer([
                     'product_id'        => $pi->product_id,
                     'qty'               => (float)$qty,
@@ -145,58 +151,9 @@ class PurchaseReceiveController extends Controller
                     'store_location_id' => $poStoreId,
                     'source_type'       => 'GR',
                     'source_id'         => $grItem->id,
+                    'user_id'           => $userId,
+                    'note'              => "GR {$gr->gr_number}",
                 ]);
-
-                if (Schema::hasTable('stock_ledger')) {
-                    $layerId = DB::table('inventory_layers')
-                        ->where('product_id', $pi->product_id)
-                        ->where('source_type', 'GR')
-                        ->where('source_id', $grItem->id)
-                        ->orderByDesc('id')
-                        ->value('id');
-
-                    if ($layerId) {
-                        $qtyCol  = Schema::hasColumn('inventory_layers','qty') ? 'qty'
-                                 : (Schema::hasColumn('inventory_layers','qty_initial') ? 'qty_initial' : null);
-
-                        $costCol = Schema::hasColumn('inventory_layers','unit_landed_cost') ? 'unit_landed_cost'
-                                 : (Schema::hasColumn('inventory_layers','unit_cost')       ? 'unit_cost'
-                                 : (Schema::hasColumn('inventory_layers','unit_price')      ? 'unit_price' : null));
-
-                        $select = 'id, product_id, store_location_id';
-                        $select .= $qtyCol  ? ", {$qtyCol} as q" : ", 0 as q";
-                        $select .= $costCol ? ", {$costCol} as landed" : ", 0 as landed";
-
-                        $layer = DB::table('inventory_layers')
-                            ->selectRaw($select)
-                            ->where('id', $layerId)
-                            ->first();
-
-                        if ($layer) {
-                            $q = (float)$layer->q ?: (float)$qty;
-                            $c = (float)$layer->landed;
-
-                            DB::table('stock_ledger')->insert([
-                                'product_id'        => (int)$layer->product_id,
-                                'store_location_id' => $layer->store_location_id
-                                    ? (int)$layer->store_location_id
-                                    : $poStoreId,
-                                'layer_id'          => (int)$layerId,
-                                'user_id'           => $userId,
-                                'ref_type'          => 'GR',
-                                'ref_id'            => $gr->id,
-                                'direction'         => +1,
-                                'qty'               => $q,
-                                'unit_cost'         => $c,
-                                'unit_price'        => null,
-                                'subtotal_cost'     => $q * $c,
-                                'note'              => "GR {$gr->gr_number}",
-                                'created_at'        => now(),
-                                'updated_at'        => now(),
-                            ]);
-                        }
-                    }
-                }
             }
 
             $stillOpen = PurchaseItem::where('purchase_id',$purchase->id)

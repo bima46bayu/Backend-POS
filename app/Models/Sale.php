@@ -15,6 +15,8 @@ class Sale extends Model
         'cashier_id',
         'store_location_id',
         'customer_name',
+        // Person the order is for. Distinct from customer_name (the type enum).
+        'buyer_name',
 
         // member / loyalty
         'member_id',
@@ -55,31 +57,56 @@ class Sale extends Model
     ];
 
     protected $casts = [
-        'subtotal'                     => 'float',
-        'discount'                     => 'float',
-        'grand_total'                  => 'float',
-        'additional_charge_total'      => 'float',
-        'final_total'                  => 'float',
+        'subtotal' => 'float',
+        'discount' => 'float',
+        'grand_total' => 'float',
+        'additional_charge_total' => 'float',
+        'final_total' => 'float',
 
         // legacy
-        'service_charge'               => 'float',
-        'tax'                          => 'float',
-        'total'                        => 'float',
+        'service_charge' => 'float',
+        'tax' => 'float',
+        'total' => 'float',
 
-        'paid'                         => 'float',
-        'change'                       => 'float',
+        'paid' => 'float',
+        'change' => 'float',
 
-        'additional_charges_snapshot'  => 'array',
+        'additional_charges_snapshot' => 'array',
 
-        'points_earned'                => 'integer',
+        'points_earned' => 'integer',
 
         // offline sync
-        'is_offline'                   => 'boolean',
-        'needs_review'                 => 'boolean',
-        'offline_created_at'           => 'datetime',
-        'synced_at'                    => 'datetime',
-        'stock_shortfall'              => 'array',
+        'is_offline' => 'boolean',
+        'needs_review' => 'boolean',
+        'offline_created_at' => 'datetime',
+        'synced_at' => 'datetime',
+        'stock_shortfall' => 'array',
     ];
+
+    protected $appends = [
+        'customer_label',
+    ];
+
+    /**
+     * Type plus person name, e.g. "Retail · Budi". Used on receipts, history
+     * and the register summary so cashiers see who the order was for without
+     * losing the type filter on `customer_name`.
+     */
+    public function customerLabel(): string
+    {
+        $type = trim((string) ($this->customer_name ?: 'General'));
+        if ($type === '') {
+            $type = 'General';
+        }
+        $name = trim((string) $this->buyer_name);
+
+        return $name === '' ? $type : "{$type} · {$name}";
+    }
+
+    public function getCustomerLabelAttribute(): string
+    {
+        return $this->customerLabel();
+    }
 
     /* ================= RELATIONS ================= */
 

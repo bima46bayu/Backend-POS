@@ -2,10 +2,13 @@
 
 namespace App\Services;
 
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use RuntimeException;
 use App\Models\Product;
+use App\Support\StockLedgerWriter;
 
 class InventoryService
 {
@@ -74,49 +77,150 @@ class InventoryService
     }
 
     /**
-     * Dipanggil saat GR: buat satu layer FIFO dengan harga beli (landed sederhana).
+     * The ONE way to create an inbound FIFO layer (GR, opening stock, import,
+     * stock-opname adjustments, returns).
+     *
+     * Previously three near-copies of this existed (Support\InventoryQuick,
+     * Services\StockService, plus inline code in StockReconciliationController).
+     * They disagreed on cost basis, on whether the ledger was written, on
+     * whether products.stock was synced, and on whether inventory_type was
+     * honoured. Everything routes here now so those can't drift again.
+     *
+     * Cost basis, in priority order:
+     *   1. explicit unit_buy (+ unit_tax + unit_other_cost) → landed cost
+     *   2. explicit unit_cost
+     *   3. products.cost_price
+     *   4. 0.0 — NEVER products.price, which is the sell price. Using the sell
+     *      price as cost makes COGS equal revenue and zeroes reported margin.
+     *
+     * Returns the new layer id, or null when nothing was written (product
+     * missing, non-stock item, or qty <= 0).
      */
-    public function addInboundLayer(array $p): void
+    public function addInboundLayer(array $p): ?int
     {
-        $productId = (int) $p['product_id'];
+        $productId = (int) ($p['product_id'] ?? 0);
+        if ($productId <= 0) {
+            return null;
+        }
 
-        // ➕ Tambahan: cek product & inventory_type
         $product = Product::find($productId);
-        if (!$product) {
-            // optional: bisa throw / silent skip. Untuk sekarang kita skip saja.
-            return;
+        if (! $product) {
+            return null;
         }
 
-        // NON-STOCK → jangan buat layer sama sekali
+        // NON-STOCK → never create a layer. Guard lives here so callers can't
+        // forget it (they each used to re-implement this check).
         if (! $product->isStockTracked()) {
-            return;
+            return null;
         }
 
-        $qty = (float) $p['qty'];
-        if ($qty <= 0) return;
+        // Receiving is always expressed in the product's stock unit. A product
+        // bought by the pack has its Unit set to "Pack", so 1 received pack is
+        // 1 stock unit and pack_size never enters the inbound path — it only
+        // tells a recipe how finely a pack can be consumed. Accepting
+        // pack_qty/pack_price here would divide the cost a second time.
+        $qty = (float) ($p['qty'] ?? 0);
 
-        $unitBuy   = (float)($p['unit_buy'] ?? 0);
-        $unitTax   = (float)($p['unit_tax'] ?? 0);
-        $unitOther = (float)($p['unit_other_cost'] ?? 0);
-        $landed    = $unitBuy + $unitTax + $unitOther;
+        if ($qty <= 0) {
+            return null;
+        }
 
-        $sourceType = strtoupper((string) ($p['source_type'] ?? 'GR'));
+        $unitTax   = (float) ($p['unit_tax'] ?? 0);
+        $unitOther = (float) ($p['unit_other_cost'] ?? 0);
 
-        DB::table('inventory_layers')->insert([
-            'product_id'        => $productId,
-            'store_location_id' => $p['store_location_id'] ?? null,
-            'source_type'       => $sourceType,
-            'source_id'         => $p['source_id'] ?? null,
-            'unit_price'        => $unitBuy,
-            'unit_tax'          => $unitTax,
-            'unit_other_cost'   => $unitOther,
-            'unit_landed_cost'  => $landed,
-            'unit_cost'         => $landed, // alias
-            'qty_initial'       => $qty,
-            'qty_remaining'     => $qty,
-            'created_at'        => now(),
-            'updated_at'        => now(),
-        ]);
+        if (array_key_exists('unit_buy', $p)) {
+            $unitBuy = (float) $p['unit_buy'];
+        } elseif (array_key_exists('unit_cost', $p)) {
+            $unitBuy = (float) $p['unit_cost'];
+        } else {
+            $unitBuy = $product->costBasis();
+        }
+
+        $landed     = $unitBuy + $unitTax + $unitOther;
+        $sourceType = strtoupper((string) ($p['source_type'] ?? $p['ref_type'] ?? 'GR'));
+        $storeId    = $p['store_location_id'] ?? null;
+        $sourceId   = $p['source_id'] ?? $p['ref_id'] ?? null;
+        $note       = $p['note'] ?? null;
+
+        return DB::transaction(function () use (
+            $productId, $storeId, $sourceType, $sourceId, $unitBuy, $unitTax,
+            $unitOther, $landed, $qty, $note, $p
+        ) {
+            $cols = Schema::getColumnListing('inventory_layers');
+
+            $payload = [
+                'product_id'    => $productId,
+                'qty_initial'   => $qty,
+                'qty_remaining' => $qty,
+                'created_at'    => now(),
+                'updated_at'    => now(),
+            ];
+
+            // Schema varies across environments, so only set what exists.
+            $optional = [
+                'store_location_id' => $storeId,
+                'source_type'       => $sourceType,
+                'source_id'         => $sourceId,
+                'unit_price'        => $unitBuy,
+                'unit_tax'          => $unitTax,
+                'unit_other_cost'   => $unitOther,
+                'unit_landed_cost'  => $landed,
+                'unit_cost'         => $landed,
+                'estimated_cost'    => $landed * $qty,
+                'note'              => $note,
+            ];
+            foreach ($optional as $col => $value) {
+                if (in_array($col, $cols, true)) {
+                    $payload[$col] = $value;
+                }
+            }
+
+            $layerId = null;
+            try {
+                $layerId = DB::table('inventory_layers')->insertGetId($payload);
+            } catch (QueryException $e) {
+                // Legacy environments may still constrain source_type to a
+                // narrow enum. Retrying without it keeps the stock correct, but
+                // a NULL source_type is invisible to opening-stock reporting —
+                // so make the trade-off loud instead of silent.
+                if (! array_key_exists('source_type', $payload)) {
+                    throw $e;
+                }
+
+                Log::warning('inventory_layers.source_type rejected; inserting without it', [
+                    'product_id'  => $productId,
+                    'source_type' => $payload['source_type'],
+                    'hint'        => 'Run the 2026_08_20_000004 migration to widen this column.',
+                ]);
+
+                unset($payload['source_type']);
+                $layerId = DB::table('inventory_layers')->insertGetId($payload);
+            }
+
+            // Ledger write is part of this operation, not the caller's job.
+            // `ledger_ref_type` lets callers keep a reporting ref_type that
+            // differs from the layer's source_type (e.g. stock opname records
+            // the layer as ADJUSTMENT_IN but the ledger as RECON_ADJUST).
+            if (Schema::hasTable('stock_ledger')) {
+                StockLedgerWriter::write([
+                    'product_id'        => $productId,
+                    'direction'         => +1,
+                    'qty'               => $qty,
+                    'unit_cost'         => $landed,
+                    'store_location_id' => $storeId,
+                    'layer_id'          => $layerId,
+                    'user_id'           => $p['user_id'] ?? auth()->id(),
+                    'ref_type'          => $p['ledger_ref_type'] ?? $sourceType,
+                    'ref_id'            => $p['ledger_ref_id'] ?? $sourceId,
+                    'note'              => $note,
+                ]);
+            }
+
+            // Keep the legacy mirror column in step for this branch.
+            self::syncLegacyProductStock($productId, $storeId !== null ? (int) $storeId : null);
+
+            return $layerId;
+        });
     }
 
     /**

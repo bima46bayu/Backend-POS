@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\InventoryService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -632,46 +633,21 @@ class StockReconciliationController extends Controller
 
                 // ================= INBOUND (stok bertambah) =================
                 if ($diff > 0) {
-                    $newLayerId = null;
-
-                    if (Schema::hasTable('inventory_layers')) {
-                        $layerPayload = [
-                            'product_id'        => $productId,
-                            'store_location_id' => $storeId ?: null,
-                            'created_at'        => $now,
-                            'updated_at'        => $now,
-                        ];
-                        // set qty
-                        if (Schema::hasColumn('inventory_layers','qty_initial'))  $layerPayload['qty_initial']   = $diff;
-                        if (Schema::hasColumn('inventory_layers','qty_remaining')) $layerPayload['qty_remaining'] = $diff;
-                        if ($qtyCol && !array_key_exists($qtyCol, $layerPayload)) $layerPayload[$qtyCol] = $diff;
-
-                        // set cost
-                        if (Schema::hasColumn('inventory_layers','unit_landed_cost')) $layerPayload['unit_landed_cost'] = $avgCost;
-                        if (Schema::hasColumn('inventory_layers','unit_cost'))        $layerPayload['unit_cost']        = $avgCost;
-                        if (Schema::hasColumn('inventory_layers','estimated_cost'))   $layerPayload['estimated_cost']   = $avgCost * $diff;
-
-                        // ref/source/note
-                        if (Schema::hasColumn('inventory_layers','ref_type'))   $layerPayload['ref_type']   = $refType;
-                        if (Schema::hasColumn('inventory_layers','ref_id'))     $layerPayload['ref_id']     = $id;
-                        if (Schema::hasColumn('inventory_layers','source_type'))$layerPayload['source_type'] = $this->safeLayerSourceType('ADJUSTMENT_IN');
-                        if (Schema::hasColumn('inventory_layers','source_id'))  $layerPayload['source_id']  = $id;
-                        if (Schema::hasColumn('inventory_layers','note'))       $layerPayload['note']       = 'Reconciliation IN';
-
-                        $newLayerId = DB::table('inventory_layers')->insertGetId($layerPayload);
-                    }
-
-                    // ledger IN (qty positif, direction +1, cost=avg)
-                    $payload = $ledgerBase + [
-                        'qty'        => $diff,
-                        'direction'  => +1,
-                        'unit_cost'  => $avgCost,
-                    ];
-                    if ($led_hasLayerFK) $payload['layer_id'] = $newLayerId;
-                    if ($led_hasUPrice)  $payload['unit_price'] = null;               // bukan sales
-                    if ($led_hasSubCost) $payload['subtotal_cost'] = $diff * $avgCost;
-
-                    DB::table('stock_ledger')->insert($payload);
+                    // Single inbound path (layer + ledger + products.stock sync).
+                    // Cost basis is the weighted average computed above, so an
+                    // opname top-up is valued like the stock it sits alongside.
+                    app(InventoryService::class)->addInboundLayer([
+                        'product_id'        => $productId,
+                        'qty'               => $diff,
+                        'unit_cost'         => $avgCost,
+                        'store_location_id' => $storeId ?: null,
+                        'source_type'       => $this->safeLayerSourceType('ADJUSTMENT_IN') ?? 'ADJUSTMENT_IN',
+                        'source_id'         => $id,
+                        'ledger_ref_type'   => $refType,
+                        'ledger_ref_id'     => $id,
+                        'note'              => 'Reconciliation IN',
+                        'user_id'           => auth()->id(),
+                    ]);
                 }
 
                 // ================= OUTBOUND (stok berkurang) =================

@@ -30,14 +30,20 @@ return new class extends Migration
             Schema::hasTable('users') &&
             Schema::hasColumn('users', 'store_location_id')
         ) {
-            // MySQL / MariaDB
-            DB::statement("
-                UPDATE sales s
-                JOIN users u ON u.id = s.cashier_id
-                SET s.store_location_id = u.store_location_id
-                WHERE s.store_location_id IS NULL
-                  AND u.store_location_id IS NOT NULL
-            ");
+            if (DB::getDriverName() === 'mysql') {
+                DB::statement("
+                    UPDATE sales s
+                    JOIN users u ON u.id = s.cashier_id
+                    SET s.store_location_id = u.store_location_id
+                    WHERE s.store_location_id IS NULL
+                      AND u.store_location_id IS NOT NULL
+                ");
+            } else {
+                DB::table('sales')->whereNull('store_location_id')->orderBy('id')->each(function ($sale) {
+                    $storeId = DB::table('users')->where('id', $sale->cashier_id)->value('store_location_id');
+                    if ($storeId) DB::table('sales')->where('id', $sale->id)->update(['store_location_id' => $storeId]);
+                });
+            }
         }
 
         // (opsional) tambah foreign key
