@@ -245,7 +245,7 @@ class AppSettingController extends Controller
         return ltrim(str_replace('\\', '/', $signature), '/');
     }
 
-    /* ========== Void security code (auto-rotates every hour per parent) ========== */
+    /* ========== Void security code (auto-rotates every 10 minutes per parent) ========== */
 
     public function voidSecurityCode(Request $request)
     {
@@ -272,7 +272,7 @@ class AppSettingController extends Controller
                 'valid_until' => $meta['valid_until'],
                 'timezone' => $meta['timezone'],
                 'rotates_every_minutes' => $meta['rotates_every_minutes'],
-                'mode' => 'hourly_auto',
+                'mode' => 'interval_auto',
             ]);
         }
 
@@ -300,9 +300,9 @@ class AppSettingController extends Controller
         return response()->json([
             'items' => $items,
             'timezone' => AppSetting::VOID_CODE_TIMEZONE,
-            'rotates_every_minutes' => 60,
-            'mode' => 'hourly_auto',
-            'message' => 'Kode void diganti otomatis setiap 1 jam (Asia/Jakarta). Tidak perlu diset manual.',
+            'rotates_every_minutes' => AppSetting::VOID_CODE_ROTATE_MINUTES,
+            'mode' => 'interval_auto',
+            'message' => 'Kode void diganti otomatis setiap 10 menit (Asia/Jakarta). Refresh mengganti kode sekarang.',
         ]);
     }
 
@@ -314,14 +314,20 @@ class AppSettingController extends Controller
 
         $storeId = (int) $data['store_location_id'];
         $this->authorizeStoreAccess($request->user(), $storeId);
-        $meta = AppSetting::currentVoidSecurityCode($storeId);
+        $meta = AppSetting::rotateVoidSecurityCode($storeId);
+        $owner = \App\Models\StoreLocation::query()->find($meta['owner_store_id']);
 
         return response()->json([
-            'message' => 'Kode void diganti otomatis setiap 1 jam. Tidak perlu diset manual.',
+            'message' => 'Kode void diganti.',
             'owner_store_id' => $meta['owner_store_id'],
+            'owner_store_name' => $owner
+                ? trim(($owner->code ? $owner->code . ' - ' : '') . $owner->name)
+                : null,
             'security_code' => $meta['security_code'],
             'valid_until' => $meta['valid_until'],
-            'mode' => 'hourly_auto',
+            'timezone' => $meta['timezone'],
+            'rotates_every_minutes' => $meta['rotates_every_minutes'],
+            'mode' => 'interval_auto',
         ]);
     }
 

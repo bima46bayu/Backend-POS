@@ -2,14 +2,14 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
 
 /**
  * A member / registered customer.
  *
- * store_location_id always holds the PARENT (region root) store id, so one card
- * works across every branch of that group with a pooled point balance.
+ * One company-wide card: lookup, balance, and Member Store work at every
+ * outlet. store_location_id is only where the member was registered.
  */
 class Member extends Model
 {
@@ -32,22 +32,22 @@ class Member extends Model
      * point balance right after signup.
      */
     protected $attributes = [
-        'points_balance'      => 0,
+        'points_balance' => 0,
         'points_earned_total' => 0,
-        'points_spent_total'  => 0,
-        'total_spend'         => 0,
-        'visit_count'         => 0,
-        'is_active'           => true,
+        'points_spent_total' => 0,
+        'total_spend' => 0,
+        'visit_count' => 0,
+        'is_active' => true,
     ];
 
     protected $casts = [
-        'birth_date'          => 'date',
-        'is_active'           => 'boolean',
-        'points_balance'      => 'integer',
+        'birth_date' => 'date',
+        'is_active' => 'boolean',
+        'points_balance' => 'integer',
         'points_earned_total' => 'integer',
-        'points_spent_total'  => 'integer',
-        'total_spend'         => 'decimal:2',
-        'visit_count'         => 'integer',
+        'points_spent_total' => 'integer',
+        'total_spend' => 'decimal:2',
+        'visit_count' => 'integer',
         'last_transaction_at' => 'datetime',
     ];
 
@@ -66,9 +66,19 @@ class Member extends Model
         return $this->hasMany(Sale::class);
     }
 
+    public function account()
+    {
+        return $this->hasOne(MemberAccount::class);
+    }
+
+    public function reservations()
+    {
+        return $this->hasMany(RewardReservation::class);
+    }
+
     /**
-     * Members are owned by the parent store group. Resolve any branch id to the
-     * group root so lookups and creation always agree on the owner.
+     * Parent store id for a branch. Kept for callers that still group by region;
+     * member lookup itself is company-wide and does not use this.
      */
     public static function ownerStoreId(int $storeLocationId): int
     {
@@ -80,7 +90,7 @@ class Member extends Model
         return (int) ($store->parent_id ?: $store->id);
     }
 
-    /** Restrict a query to the group that owns [$storeLocationId]. */
+    /** Restrict a query to one home store. Unused for POS lookup (global). */
     public function scopeForStoreGroup(Builder $q, ?int $storeLocationId): Builder
     {
         if ($storeLocationId === null) {
@@ -107,7 +117,7 @@ class Member extends Model
 
         return $q->where(function ($w) use ($term, $digits) {
             $w->where('name', 'like', "%{$term}%")
-              ->orWhere('code', 'like', "%{$term}%");
+                ->orWhere('code', 'like', "%{$term}%");
 
             if ($digits !== '') {
                 $w->orWhere('phone', 'like', "%{$digits}%");
@@ -118,15 +128,12 @@ class Member extends Model
     }
 
     /**
-     * Next sequential card code for a store group, e.g. MBR-0007.
-     *
-     * Derived from the highest existing numeric suffix rather than a count, so
-     * deleting a member never causes a code collision.
+     * Next sequential card code, e.g. MBR-0007. Company-wide so every outlet
+     * shares one number sequence.
      */
-    public static function nextCode(int $ownerStoreId): string
+    public static function nextCode(?int $ignoredStoreId = null): string
     {
         $last = static::query()
-            ->where('store_location_id', $ownerStoreId)
             ->where('code', 'like', 'MBR-%')
             ->orderByRaw('LENGTH(code) DESC')
             ->orderBy('code', 'desc')
@@ -137,19 +144,19 @@ class Member extends Model
             $n = (int) $m[1];
         }
 
-        return 'MBR-' . str_pad((string) ($n + 1), 4, '0', STR_PAD_LEFT);
+        return 'MBR-'.str_pad((string) ($n + 1), 4, '0', STR_PAD_LEFT);
     }
 
     /** Compact shape for the POS member picker. */
     public function toPickerArray(): array
     {
         return [
-            'id'             => (int) $this->id,
-            'code'           => (string) $this->code,
-            'name'           => (string) $this->name,
-            'phone'          => $this->phone,
+            'id' => (int) $this->id,
+            'code' => (string) $this->code,
+            'name' => (string) $this->name,
+            'phone' => $this->phone,
             'points_balance' => (int) $this->points_balance,
-            'is_active'      => (bool) $this->is_active,
+            'is_active' => (bool) $this->is_active,
         ];
     }
 }

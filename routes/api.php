@@ -1,30 +1,30 @@
 <?php
 
-use Illuminate\Support\Facades\Route;
-
-use App\Http\Controllers\AuthController;
-use App\Http\Controllers\AppSettingController;
 use App\Http\Controllers\AdditionalChargeController;
+use App\Http\Controllers\AppSettingController;
+use App\Http\Controllers\AuthController;
 use App\Http\Controllers\BankAccountController;
 use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\CoaController;
 use App\Http\Controllers\DiscountController;
 use App\Http\Controllers\GoodsReceiptController;
 use App\Http\Controllers\InventoryController;
+use App\Http\Controllers\LoyaltyRewardController;
+use App\Http\Controllers\Member;
 use App\Http\Controllers\MemberController;
+use App\Http\Controllers\Staff;
 use App\Http\Controllers\PayeeController;
+use App\Http\Controllers\PaymentRequestBalanceController;
 use App\Http\Controllers\PaymentRequestController;
 use App\Http\Controllers\PaymentRequestItemController;
-use App\Http\Controllers\PaymentRequestBalanceController;
-use App\Http\Controllers\PosCheckoutController;
-use App\Http\Controllers\ProductRecipeController;
 use App\Http\Controllers\ProductController;
 use App\Http\Controllers\ProductImportController;
 use App\Http\Controllers\ProductOptionGroupController;
+use App\Http\Controllers\ProductRecipeController;
 use App\Http\Controllers\PurchaseController;
 use App\Http\Controllers\PurchaseReceiveController;
-use App\Http\Controllers\ReportController;
 use App\Http\Controllers\RegisterSessionController;
+use App\Http\Controllers\ReportController;
 use App\Http\Controllers\SaleController;
 use App\Http\Controllers\StockController;
 use App\Http\Controllers\StockLogController;
@@ -35,6 +35,7 @@ use App\Http\Controllers\SubCategoryController;
 use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\UnitController;
 use App\Http\Controllers\UserController;
+use Illuminate\Support\Facades\Route;
 
 /*
 |--------------------------------------------------------------------------
@@ -48,16 +49,49 @@ Route::options('{any}', fn () => response()->noContent())->where('any', '.*');
 | PUBLIC
 |--------------------------------------------------------------------------
 */
-Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
+/*
+| Member mobile API (Member-Mobile app). Single canonical surface: /api/v1/member.
+| One path per action — no aliases. Member-Mobile pins this exact contract.
+*/
+Route::prefix('v1/member')->group(function () {
+    Route::post('/auth/otp', [Member\AuthController::class, 'requestRegistrationOtp'])->middleware('throttle:5,1');
+    Route::post('/auth/verify', [Member\AuthController::class, 'register'])->middleware('throttle:10,1');
+    Route::post('/auth/login', [Member\AuthController::class, 'login'])->middleware('throttle:10,1');
+    Route::post('/auth/password/reset', [Member\AuthController::class, 'resetPassword'])->middleware('throttle:10,1');
 
+    Route::middleware(['auth:sanctum', 'principal.member'])->group(function () {
+        Route::post('/auth/logout', [Member\AuthController::class, 'logout']);
+
+        Route::get('/profile', [Member\ProfileController::class, 'show']);
+        Route::patch('/profile', [Member\ProfileController::class, 'update']);
+        Route::get('/bootstrap', [Member\ProfileController::class, 'bootstrap']);
+        Route::get('/activity', [Member\ProfileController::class, 'activity']);
+        Route::get('/perks', [Member\ProfileController::class, 'perks']);
+        Route::get('/promotions', [Member\ProfileController::class, 'promotions']);
+
+        Route::get('/reward-categories', [Member\RewardController::class, 'categories']);
+        Route::get('/rewards', [Member\RewardController::class, 'index']);
+        Route::get('/rewards/{reward}', [Member\RewardController::class, 'show'])->whereNumber('reward');
+
+        Route::get('/store-locations', [Member\ReservationController::class, 'stores']);
+        Route::get('/reservations', [Member\ReservationController::class, 'index']);
+        Route::post('/reservations', [Member\ReservationController::class, 'store']);
+        Route::get('/reservations/{reservation}', [Member\ReservationController::class, 'show']);
+        Route::post('/reservations/{reservation}/cancel', [Member\ReservationController::class, 'cancel']);
+        Route::post('/reservations/{reservation}/qr', [Member\ReservationController::class, 'qr']);
+
+        Route::get('/card', [Member\CardController::class, 'show']);
+        Route::post('/card/qr', [Member\CardController::class, 'qr']);
+    });
+});
 /*
  | Reachability probe for the mobile POS offline mode.
  | Intentionally public and DB-free: the client only needs to know whether the
  | API host answers, not whether its own token is still valid.
  */
 Route::get('/ping', fn () => response()->json([
-    'ok'   => true,
+    'ok' => true,
     'time' => now()->toIso8601String(),
 ]));
 
@@ -75,7 +109,20 @@ Route::get('/payment-requests/{id}/pdf-link', [PaymentRequestController::class, 
 | AUTHENTICATED
 |--------------------------------------------------------------------------
 */
-Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
+Route::middleware(['auth:sanctum', 'principal.staff', 'daily.session'])->group(function () {
+    /*
+    | Staff-side reward pickup (POS-Mobile). Canonical and only surface.
+    | `resolve` matches a pickup code the member reads out; `resolve-qr` matches
+    | the short-lived token from the member app's QR.
+    */
+    Route::prefix('v1/staff/reward-redemptions')->group(function () {
+        Route::get('/', [Staff\RewardReservationController::class, 'index']);
+        Route::get('/resolve', [Staff\RewardReservationController::class, 'resolvePickupCode']);
+        Route::post('/resolve-qr', [Staff\RewardReservationController::class, 'resolveQr']);
+        Route::post('/{reservation}/fulfill', [Staff\RewardReservationController::class, 'fulfill']);
+        Route::post('/{reservation}/reject', [Staff\RewardReservationController::class, 'reject']);
+    });
+    Route::post('/v1/staff/member-cards/resolve', [Staff\MemberCardController::class, 'resolve']);
 
     /*
     | Auth
@@ -128,7 +175,7 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
         Route::get('/', [SubCategoryController::class, 'index']);
         Route::get('/{subCategory}', [SubCategoryController::class, 'show'])->whereNumber('subCategory');
     });
-    Route::get("/reports/subcategory-month", [SubCategoryController::class, "reportMonthly"]);
+    Route::get('/reports/subcategory-month', [SubCategoryController::class, 'reportMonthly']);
 
     /*
     | Products
@@ -156,6 +203,12 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
         Route::get('/summary', [StockWriteOffController::class, 'summary']);
         Route::get('/', [StockWriteOffController::class, 'index']);
         Route::post('/', [StockWriteOffController::class, 'store']);
+        Route::put('/{stock_write_off}', [StockWriteOffController::class, 'update'])
+            ->whereNumber('stock_write_off');
+        Route::post('/{stock_write_off}/submit', [StockWriteOffController::class, 'submit'])
+            ->whereNumber('stock_write_off');
+        Route::delete('/{stock_write_off}', [StockWriteOffController::class, 'destroy'])
+            ->whereNumber('stock_write_off');
     });
 
     /*
@@ -174,6 +227,7 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
         Route::get('/{sale}', [SaleController::class, 'show'])->whereNumber('sale');
         Route::post('/', [SaleController::class, 'store']);
         Route::post('/{sale}/void', [SaleController::class, 'void'])->whereNumber('sale');
+        Route::post('/{sale}/acknowledge-review', [SaleController::class, 'acknowledgeReview'])->whereNumber('sale');
         Route::get('/{sale}/fifo-breakdown', [SaleController::class, 'fifoBreakdown'])->whereNumber('sale');
     });
 
@@ -188,7 +242,6 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
     | POS
     */
     Route::prefix('pos')->group(function () {
-        Route::post('/checkout', [PosCheckoutController::class, 'checkout']);
         Route::get('/registers/current', [RegisterSessionController::class, 'current']);
         Route::post('/registers/open', [RegisterSessionController::class, 'open']);
         Route::post('/registers/{id}/close', [RegisterSessionController::class, 'close'])->whereNumber('id');
@@ -230,6 +283,15 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
         Route::get('/settings/points', [MemberController::class, 'settings']);
     });
 
+    /*
+    | Member Store — cashiers redeem points against the reward catalog.
+    */
+    Route::prefix('loyalty-rewards')->group(function () {
+        Route::get('/', [LoyaltyRewardController::class, 'index']);
+        Route::post('/{loyalty_reward}/redeem', [LoyaltyRewardController::class, 'redeem'])
+            ->whereNumber('loyalty_reward');
+    });
+
     Route::get('product-recipes', [ProductRecipeController::class, 'index']);
 
     /*
@@ -267,7 +329,7 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
 
         Route::prefix('categories')->group(function () {
             Route::post('/', [CategoryController::class, 'store']);
-            Route::match(['put','patch'], '/{category}', [CategoryController::class, 'update'])->whereNumber('category');
+            Route::match(['put', 'patch'], '/{category}', [CategoryController::class, 'update'])->whereNumber('category');
             Route::delete('/{category}', [CategoryController::class, 'destroy'])->whereNumber('category');
         });
 
@@ -279,7 +341,7 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
 
         Route::prefix('products')->group(function () {
             Route::post('/', [ProductController::class, 'store']);
-            Route::match(['put','patch'], '/{product}', [ProductController::class, 'update'])->whereNumber('product');
+            Route::match(['put', 'patch'], '/{product}', [ProductController::class, 'update'])->whereNumber('product');
             Route::delete('/{product}', [ProductController::class, 'destroy'])->whereNumber('product');
             Route::post('/{product}/upload', [ProductController::class, 'upload'])->whereNumber('product');
             Route::post('/{product}/stock/change', [StockController::class, 'change'])->whereNumber('product');
@@ -301,7 +363,7 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
             Route::get('/roles/options', [UserController::class, 'roleOptions']);
             Route::get('/{user}', [UserController::class, 'show'])->whereNumber('user');
             Route::post('/', [UserController::class, 'store']);
-            Route::match(['put','patch'], '/{user}', [UserController::class, 'update'])->whereNumber('user');
+            Route::match(['put', 'patch'], '/{user}', [UserController::class, 'update'])->whereNumber('user');
             Route::delete('/{user}', [UserController::class, 'destroy'])->whereNumber('user');
             Route::patch('/{user}/role', [UserController::class, 'updateRole'])->whereNumber('user');
             Route::post('/{user}/reset-password', [UserController::class, 'resetPassword'])->whereNumber('user');
@@ -318,7 +380,7 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
             Route::delete('/{id}', [StockReconciliationController::class, 'destroy']);
         });
 
-        Route::apiResource('units', UnitController::class)->only(['index','store','update','destroy']);
+        Route::apiResource('units', UnitController::class)->only(['index', 'store', 'update', 'destroy']);
 
         Route::post('product-recipes', [ProductRecipeController::class, 'store']);
         Route::get('product-recipes/{product_recipe}', [ProductRecipeController::class, 'show']);
@@ -334,9 +396,9 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
 
         Route::prefix('product-option-groups')->group(function () {
             Route::post('/', [ProductOptionGroupController::class, 'store']);
-            Route::match(['put','patch'], '/{product_option_group}/products', [ProductOptionGroupController::class, 'syncProducts'])
+            Route::match(['put', 'patch'], '/{product_option_group}/products', [ProductOptionGroupController::class, 'syncProducts'])
                 ->whereNumber('product_option_group');
-            Route::match(['put','patch'], '/{product_option_group}', [ProductOptionGroupController::class, 'update'])
+            Route::match(['put', 'patch'], '/{product_option_group}', [ProductOptionGroupController::class, 'update'])
                 ->whereNumber('product_option_group');
             Route::delete('/{product_option_group}', [ProductOptionGroupController::class, 'destroy'])
                 ->whereNumber('product_option_group');
@@ -359,6 +421,13 @@ Route::middleware(['auth:sanctum', 'daily.session'])->group(function () {
 
             Route::get('/{member}/points', [MemberController::class, 'pointHistory'])->whereNumber('member');
             Route::post('/{member}/points', [MemberController::class, 'adjustPoints'])->whereNumber('member');
+        });
+
+        Route::prefix('loyalty-rewards')->group(function () {
+            Route::post('/', [LoyaltyRewardController::class, 'store']);
+            Route::put('/{loyalty_reward}', [LoyaltyRewardController::class, 'update'])->whereNumber('loyalty_reward');
+            Route::patch('/{loyalty_reward}', [LoyaltyRewardController::class, 'update'])->whereNumber('loyalty_reward');
+            Route::delete('/{loyalty_reward}', [LoyaltyRewardController::class, 'destroy'])->whereNumber('loyalty_reward');
         });
 
         Route::apiResource('bank-accounts', BankAccountController::class);

@@ -48,7 +48,7 @@ class AuthController extends Controller
 
         $user->tokens()->delete();
 
-        $token = $user->createToken('pos-token')->plainTextToken;
+        $token = $user->createToken('pos-token', ['staff'])->plainTextToken;
 
         return response()->json([
             'user'  => $this->formatUser($user),
@@ -114,3 +114,4 @@ class AuthController extends Controller
         return $payload;
     }
 }
+

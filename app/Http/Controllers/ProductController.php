@@ -157,6 +157,14 @@ class ProductController extends Controller
             'products.name',
             'products.description',
             'products.price',
+            // Cost and pack info must be listed explicitly: this is an allowlist,
+            // so anything omitted is silently absent from the payload. The PO form
+            // pre-fills the unit price from `cost_price`, the recipe form offers
+            // the pack's contents unit from `pack_size`/`pack_label`, and neither
+            // can do that unless these arrive here.
+            'products.cost_price',
+            'products.pack_size',
+            'products.pack_label',
             'products.image_url',
             'products.store_location_id',
             'products.created_by',
@@ -317,6 +325,12 @@ class ProductController extends Controller
             'sku'               => 'nullable|string|unique:products,sku',
             'name'              => 'required|string',
             'price'             => 'required|numeric',
+            // Purchase/landed cost. Distinct from `price` (sell price) — see
+            // Product::costBasis().
+            'cost_price'        => 'nullable|numeric|min:0',
+            // Pack purchasing: buy a Pack of 100, stock/sell per Pcs.
+            'pack_size'         => 'nullable|numeric|min:0',
+            'pack_label'        => 'nullable|string|max:32',
             'stock'             => 'nullable|numeric|min:0',
             'category_id'       => 'nullable|integer',
             'sub_category_id'   => 'nullable|integer',
@@ -383,6 +397,20 @@ class ProductController extends Controller
                     $sku = $this->generateNextSku($storeLocationId ? (int) $storeLocationId : null);
                 }
 
+                // 2e) Pack purchasing. `pack_size` of 0/1 means "no pack", so
+                // normalise it to NULL rather than storing a no-op divisor.
+                $packSize = isset($data['pack_size']) && (float) $data['pack_size'] > 1
+                    ? (float) $data['pack_size']
+                    : null;
+                $packLabel = $packSize !== null ? ($data['pack_label'] ?? null) : null;
+
+                // cost_price is ALWAYS per stock unit — the only unit inventory,
+                // COGS and margin ever read. For a pack-stocked product that IS
+                // the pack price. `pack_size` only tells a recipe how finely a
+                // pack may be consumed; it must never rescale this field, since
+                // dividing here is what stored 5.000/pack as 50.
+                $costPrice = $data['cost_price'] ?? null;
+
                 // 3) Buat produk (retry singkat jika race unique SKU)
                 $productId = null;
                 for ($attempt = 0; $attempt < 5; $attempt++) {
@@ -391,6 +419,9 @@ class ProductController extends Controller
                             'sku'               => $sku,
                             'name'              => $data['name'],
                             'price'             => $data['price'],
+                            'cost_price'        => $costPrice,
+                            'pack_size'         => $packSize,
+                            'pack_label'        => $packLabel,
                             'category_id'       => $data['category_id'] ?? null,
                             'sub_category_id'   => $data['sub_category_id'] ?? null,
                             'description'       => $data['description'] ?? null,
@@ -423,64 +454,19 @@ class ProductController extends Controller
                 $initQty = (float) ($data['stock'] ?? 0);
 
                 if ($initQty > 0 && $inventoryType === 'stock') {
-                    \App\Support\InventoryQuick::addInboundLayer([
+                    // Layer + stock_ledger row + products.stock sync all happen
+                    // inside the service; don't re-derive any of it here.
+                    app(InventoryService::class)->addInboundLayer([
                         'product_id'        => $productId,
                         'qty'               => $initQty,
+                        // Derived cost, so a pack price can never land here as a
+                        // per-unit cost.
+                        'unit_cost'         => (float) ($costPrice ?? 0),
                         'note'              => 'Stok awal (product store)',
                         'store_location_id' => $storeLocationId,
+                        'source_type'       => 'ADD_PRODUCT',
+                        'user_id'           => $user->id,
                     ]);
-
-                    if (Schema::hasTable('stock_ledger')) {
-                        $layer = DB::table('inventory_layers')
-                            ->where('product_id', $productId)
-                            ->orderByDesc('id')
-                            ->first();
-
-                        $qtyCol  = Schema::hasColumn('inventory_layers','qty')               ? 'qty'
-                                : (Schema::hasColumn('inventory_layers','qty_initial')      ? 'qty_initial'
-                                : (Schema::hasColumn('inventory_layers','qty_remaining')    ? 'qty_remaining' : null));
-
-                        $costCol = Schema::hasColumn('inventory_layers','unit_landed_cost')  ? 'unit_landed_cost'
-                                : (Schema::hasColumn('inventory_layers','unit_cost')        ? 'unit_cost'
-                                : (Schema::hasColumn('inventory_layers','unit_price')       ? 'unit_price' : null));
-
-                        $qVal = $initQty;
-                        $cVal = 0.0;
-                        $storeLocForLedger = $storeLocationId;
-                        $layerIdForLedger  = null;
-
-                        if ($layer) {
-                            $storeLocForLedger = $layer->store_location_id ?? $storeLocForLedger;
-                            $layerIdForLedger  = $layer->id ?? null;
-
-                            if ($qtyCol && isset($layer->{$qtyCol})) {
-                                $qVal = (float) $layer->{$qtyCol} ?: $initQty;
-                            }
-                            if ($costCol && isset($layer->{$costCol})) {
-                                $cVal = (float) $layer->{$costCol};
-                            }
-                        }
-
-                        DB::table('stock_ledger')->insert([
-                            'product_id'        => (int) $productId,
-                            'store_location_id' => $storeLocForLedger ? (int) $storeLocForLedger : null,
-                            'layer_id'          => $layerIdForLedger,
-                            'user_id'           => auth()->id() ?: null,
-                            'ref_type'          => 'ADD',
-                            'ref_id'            => null,
-                            'direction'         => +1,
-                            'qty'               => $qVal,
-                            'unit_cost'         => $cVal,
-                            'unit_price'        => null,
-                            'subtotal_cost'     => $qVal * $cVal,
-                            'note'              => 'Stok awal (product store)',
-                            'created_at'        => now(),
-                            'updated_at'        => now(),
-                        ]);
-                    }
-
-                    // 5) Legacy column: mirror this branch only (layers = source of truth)
-                    InventoryService::syncLegacyProductStock($productId, $storeLocationId);
                 }
 
                 // 6) Opsi item (sugar level, ice level, dll)

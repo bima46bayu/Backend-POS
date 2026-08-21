@@ -268,6 +268,11 @@ class InventoryController extends Controller
             'products.sku',
             'products.name',
             'products.price',
+            // Cost/pack basis, so inventory valuation screens can show what stock
+            // is actually worth instead of only what it sells for.
+            'products.cost_price',
+            'products.pack_size',
+            'products.pack_label',
             'products.updated_at',
             'products.inventory_type',
             'products.store_location_id',

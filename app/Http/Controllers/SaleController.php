@@ -85,6 +85,10 @@ class SaleController extends Controller
             });
         }
 
+        if ($r->boolean('needs_review')) {
+            $q->where('needs_review', true);
+        }
+
         /* ==============================
         * 📄 PAGINATION
         * ============================== */
@@ -104,6 +108,24 @@ class SaleController extends Controller
     {
         // tambahkan storeLocation di detail
         $sale->load(['items.product', 'cashier', 'storeLocation', 'payments']);
+        return response()->json($sale);
+    }
+
+    /**
+     * Manager looked at an offline stock-gap sale. The shortfall snapshot stays
+     * for audit; we only clear the queue flag.
+     */
+    public function acknowledgeReview(Request $r, Sale $sale)
+    {
+        $this->authorizeStoreAccess($r->user(), (int) $sale->store_location_id);
+
+        if (! $sale->needs_review) {
+            return response()->json($sale);
+        }
+
+        $sale->needs_review = false;
+        $sale->save();
+
         return response()->json($sale);
     }
 
@@ -162,8 +184,7 @@ class SaleController extends Controller
 
         /* =====================================================
         * MEMBER (customer database)
-        * Member dimiliki grup toko induk, jadi kartu dari cabang lain dalam
-        * satu induk tetap valid — tapi member dari grup LAIN ditolak.
+        * Company-wide card: any outlet may attach any active member.
         * ===================================================== */
         $memberId = null;
         if ($request->filled('member_id')) {
@@ -174,9 +195,6 @@ class SaleController extends Controller
             }
             if (! $member->is_active) {
                 abort(422, "Member {$member->code} sudah tidak aktif.");
-            }
-            if ((int) $member->store_location_id !== Member::ownerStoreId((int) $storeId)) {
-                abort(422, 'Member ini bukan milik grup toko yang sama.');
             }
 
             $memberId = (int) $member->id;
@@ -590,6 +608,7 @@ class SaleController extends Controller
                 'cashier_id'        => $user->id,
                 'store_location_id' => $storeId,
                 'customer_name'     => $request->customer_name ?? 'General',
+                'buyer_name'        => trim((string) $request->input('buyer_name', '')) ?: null,
                 'member_id'         => $memberId,
 
                 'subtotal'          => $subtotal,
@@ -830,10 +849,12 @@ class SaleController extends Controller
              | akan salah.
              */
             $revoked = LoyaltyService::revokeForSale($sale, auth()->id());
+            $restored = LoyaltyService::restoreRedeemForSale($sale, auth()->id());
 
             return response()->json([
                 'message'        => 'Sale voided',
                 'points_revoked' => $revoked,
+                'points_restored' => $restored,
                 'sale'           => $sale->fresh(['items.product', 'payments', 'cashier', 'member'])
             ]);
         });

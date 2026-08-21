@@ -22,11 +22,20 @@ class StockWriteOffController extends Controller
     public function index(Request $r)
     {
         $q = StockWriteOff::query()
-            ->with(['product:id,sku,name,unit_id', 'product.unit:id,name', 'user:id,name', 'storeLocation:id,code,name'])
+            ->with([
+                'product:id,sku,name,unit_id',
+                'product.unit:id,name',
+                'qtyUnit:id,name',
+                'user:id,name',
+                'storeLocation:id,code,name',
+            ])
             ->latest('id');
 
         $this->applySaleStoreScope($q, $r);
 
+        if ($r->filled('status')) {
+            $q->where('status', strtolower((string) $r->input('status')));
+        }
         if ($r->filled('reason')) {
             $q->where('reason', strtoupper((string) $r->input('reason')));
         }
@@ -61,10 +70,11 @@ class StockWriteOffController extends Controller
         ]);
     }
 
-    /** GET /api/stock-write-offs/summary — totals grouped by reason */
+    /** GET /api/stock-write-offs/summary — totals grouped by reason (submitted only) */
     public function summary(Request $r)
     {
-        $q = StockWriteOff::query();
+        $q = StockWriteOff::query()
+            ->where('status', StockWriteOff::STATUS_SUBMITTED);
         $this->applySaleStoreScope($q, $r);
 
         if ($r->filled('from')) {
@@ -84,25 +94,26 @@ class StockWriteOffController extends Controller
             $byReason[$reason] = [
                 'reason' => $reason,
                 'label' => StockWriteOff::reasonLabels()[$reason] ?? $reason,
-                'qty' => (int) ($row->qty ?? 0),
+                'qty' => (float) ($row->qty ?? 0),
                 'cost' => (float) ($row->cost ?? 0),
             ];
         }
 
         return response()->json([
             'by_reason' => array_values($byReason),
-            'total_qty' => (int) $rows->sum('qty'),
+            'total_qty' => (float) $rows->sum('qty'),
             'total_cost' => (float) $rows->sum('cost'),
         ]);
     }
 
-    /** POST /api/stock-write-offs */
+    /** POST /api/stock-write-offs — always creates a DRAFT (stock untouched) */
     public function store(Request $r)
     {
         $data = $r->validate([
             'store_location_id' => ['required', 'integer', 'exists:store_locations,id'],
             'product_id' => ['required', 'integer', 'exists:products,id'],
             'qty' => ['required', 'numeric', 'gt:0'],
+            'qty_unit_id' => ['nullable', 'integer', 'exists:units,id'],
             'reason' => ['required', 'string', Rule::in(StockWriteOff::REASONS)],
             'note' => ['nullable', 'string', 'max:255'],
         ]);
@@ -112,9 +123,10 @@ class StockWriteOffController extends Controller
         $this->authorizeStoreAccess($user, $storeId);
 
         try {
-            $writeOff = $this->service->record([
+            $writeOff = $this->service->createDraft([
                 'product_id' => (int) $data['product_id'],
                 'qty' => (float) $data['qty'],
+                'qty_unit_id' => $data['qty_unit_id'] ?? null,
                 'reason' => $data['reason'],
                 'store_location_id' => $storeId,
                 'user_id' => $user?->id,
@@ -127,9 +139,69 @@ class StockWriteOffController extends Controller
         }
 
         return response()->json(
-            $writeOff->load(['product:id,sku,name', 'user:id,name']),
+            $writeOff->load(['product:id,sku,name,unit_id', 'product.unit:id,name', 'qtyUnit:id,name', 'user:id,name']),
             201
         );
+    }
+
+    /** PUT /api/stock-write-offs/{id} — edit draft only */
+    public function update(Request $r, StockWriteOff $stockWriteOff)
+    {
+        $this->authorizeStoreAccess($r->user(), (int) $stockWriteOff->store_location_id);
+
+        $data = $r->validate([
+            'product_id' => ['sometimes', 'integer', 'exists:products,id'],
+            'qty' => ['sometimes', 'numeric', 'gt:0'],
+            'qty_unit_id' => ['nullable', 'integer', 'exists:units,id'],
+            'reason' => ['sometimes', 'string', Rule::in(StockWriteOff::REASONS)],
+            'note' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        try {
+            $writeOff = $this->service->updateDraft($stockWriteOff, $data);
+        } catch (RuntimeException $e) {
+            throw ValidationException::withMessages([
+                'qty' => [$e->getMessage()],
+            ]);
+        }
+
+        return response()->json(
+            $writeOff->load(['product:id,sku,name,unit_id', 'product.unit:id,name', 'qtyUnit:id,name', 'user:id,name'])
+        );
+    }
+
+    /** POST /api/stock-write-offs/{id}/submit — consume FIFO + lock */
+    public function submit(Request $r, StockWriteOff $stockWriteOff)
+    {
+        $this->authorizeStoreAccess($r->user(), (int) $stockWriteOff->store_location_id);
+
+        try {
+            $writeOff = $this->service->submit($stockWriteOff, $r->user()?->id);
+        } catch (RuntimeException $e) {
+            throw ValidationException::withMessages([
+                'qty' => [$e->getMessage()],
+            ]);
+        }
+
+        return response()->json(
+            $writeOff->load(['product:id,sku,name', 'user:id,name'])
+        );
+    }
+
+    /** DELETE /api/stock-write-offs/{id} — draft only */
+    public function destroy(Request $r, StockWriteOff $stockWriteOff)
+    {
+        $this->authorizeStoreAccess($r->user(), (int) $stockWriteOff->store_location_id);
+
+        try {
+            $this->service->deleteDraft($stockWriteOff);
+        } catch (RuntimeException $e) {
+            throw ValidationException::withMessages([
+                'status' => [$e->getMessage()],
+            ]);
+        }
+
+        return response()->json(['ok' => true]);
     }
 
     /** GET /api/stock-write-offs/reasons */

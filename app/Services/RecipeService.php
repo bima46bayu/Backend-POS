@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Product;
 use App\Models\ProductRecipe;
 use App\Models\ProductRecipeItem;
+use App\Models\Unit;
 use Illuminate\Support\Collection;
 use App\Services\InventoryService;
 use App\Services\UnitConversionService;
@@ -33,21 +34,76 @@ class RecipeService
     public function lineQtyInStockUnit(ProductRecipeItem $line): float
     {
         $recipeUnit = $line->unit ?? $line->ingredient?->unit;
-        $stockUnit = $line->ingredient?->unit;
+        $ingredient = $line->ingredient;
+
+        if (! $recipeUnit || ! $ingredient?->unit) {
+            abort(422, 'Resep memiliki bahan tanpa satuan yang valid.');
+        }
+
+        return $this->convertToStockUnit((float) $line->qty, $recipeUnit, $ingredient);
+    }
+
+    /**
+     * Convert a recipe/option qty into the ingredient's stock unit.
+     *
+     * THE single conversion rule for recipes. Both sale-time consumption and
+     * save-time validation in ProductRecipeController go through here — they
+     * used to each call UnitConversionService directly, which is how the form
+     * could accept "Pcs" in the dropdown and then reject it on save.
+     *
+     * Handles the Pack -> contents case that UnitConversionService cannot: it
+     * only knows kg/g and l/ml, so "Pcs to Pack" throws there. pack_size
+     * supplies the missing ratio (2 Batang of a 100-pack -> 0.02 Pack).
+     */
+    public function convertToStockUnit(float $qty, Unit|string|null $recipeUnit, Product $ingredient): float
+    {
+        $stockUnit = $ingredient->unit;
 
         if (! $recipeUnit || ! $stockUnit) {
             abort(422, 'Resep memiliki bahan tanpa satuan yang valid.');
         }
 
+        $recipeName = $recipeUnit instanceof Unit ? $recipeUnit->name : $recipeUnit;
+        $stockName = $stockUnit instanceof Unit ? $stockUnit->name : $stockUnit;
+
+        $sameUnit = UnitConversionService::normalize($recipeName)
+            === UnitConversionService::normalize($stockName);
+
+        if ($ingredient->isPacked() && ! $sameUnit
+            && $this->matchesContentsUnit($ingredient, $recipeName)) {
+            return $ingredient->contentsToStockUnits($qty);
+        }
+
         try {
-            return UnitConversionService::convert(
-                (float) $line->qty,
-                $recipeUnit,
-                $stockUnit
-            );
+            return UnitConversionService::convert($qty, $recipeUnit, $stockUnit);
         } catch (\InvalidArgumentException $e) {
             abort(422, $e->getMessage());
         }
+    }
+
+    /**
+     * Does this recipe unit name refer to what's inside the ingredient's pack?
+     *
+     * Matches the product's own pack_label first. Falls back to generic piece
+     * words so a recipe written in "Pcs" still works when pack_label was left
+     * blank — otherwise the sale would 422 on an unconvertible unit pair.
+     *
+     * Mirrored by CONTENTS_ALIASES in MasterRecipePage.js; keep both in step or
+     * the dropdown will offer a unit the backend then refuses.
+     */
+    private function matchesContentsUnit(Product $ingredient, ?string $recipeUnitName): bool
+    {
+        $recipe = strtolower(trim((string) $recipeUnitName));
+        if ($recipe === '') {
+            return false;
+        }
+
+        $label = strtolower(trim((string) $ingredient->pack_label));
+        if ($label !== '' && $label === $recipe) {
+            return true;
+        }
+
+        return in_array($recipe, ['pcs', 'pc', 'piece', 'pieces', 'batang', 'lembar', 'buah', 'biji'], true);
     }
 
     /**
@@ -164,12 +220,10 @@ class RecipeService
             $stockUnit = $ingredient?->unit;
             $fromUnit = $val->qtyDeltaUnit ?? $stockUnit;
 
-            if ($stockUnit && $fromUnit) {
-                try {
-                    $raw = UnitConversionService::convert($raw, $fromUnit, $stockUnit);
-                } catch (\InvalidArgumentException $e) {
-                    abort(422, $e->getMessage());
-                }
+            // Same rule as recipe lines, so an option like "+2 sedotan" entered
+            // in Batang converts against a Pack-stocked ingredient too.
+            if ($ingredient && $stockUnit && $fromUnit) {
+                $raw = $this->convertToStockUnit($raw, $fromUnit, $ingredient);
             }
 
             $ingId = (int) $group->ingredient_product_id;

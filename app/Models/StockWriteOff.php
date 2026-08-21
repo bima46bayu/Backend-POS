@@ -21,6 +21,14 @@ class StockWriteOff extends Model
         self::REASON_OTHER,
     ];
 
+    public const STATUS_DRAFT = 'draft';
+    public const STATUS_SUBMITTED = 'submitted';
+
+    public const STATUSES = [
+        self::STATUS_DRAFT,
+        self::STATUS_SUBMITTED,
+    ];
+
     protected $fillable = [
         'store_location_id',
         'product_id',
@@ -28,15 +36,20 @@ class StockWriteOff extends Model
         'register_session_id',
         'reason',
         'qty',
+        'qty_unit_id',
         'unit_cost',
         'total_cost',
         'note',
+        'status',
+        'submitted_at',
+        'submitted_by',
     ];
 
     protected $casts = [
         'qty' => 'float',
         'unit_cost' => 'float',
         'total_cost' => 'float',
+        'submitted_at' => 'datetime',
     ];
 
     public function product(): BelongsTo
@@ -49,9 +62,29 @@ class StockWriteOff extends Model
         return $this->belongsTo(User::class);
     }
 
+    public function submittedByUser(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'submitted_by');
+    }
+
     public function storeLocation(): BelongsTo
     {
         return $this->belongsTo(StoreLocation::class, 'store_location_id');
+    }
+
+    public function qtyUnit(): BelongsTo
+    {
+        return $this->belongsTo(Unit::class, 'qty_unit_id');
+    }
+
+    public function isDraft(): bool
+    {
+        return ($this->status ?? self::STATUS_SUBMITTED) === self::STATUS_DRAFT;
+    }
+
+    public function isSubmitted(): bool
+    {
+        return ! $this->isDraft();
     }
 
     public static function reasonLabels(): array

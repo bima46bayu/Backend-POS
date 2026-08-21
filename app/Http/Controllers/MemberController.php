@@ -13,8 +13,8 @@ use Illuminate\Validation\Rule;
 /**
  * Member / customer database + loyalty point settings.
  *
- * Members are owned by a PARENT store group, so every read/write resolves the
- * caller's branch to its region root before touching the table.
+ * Members are company-wide: any outlet can look up the same card and the same
+ * point balance. store_location_id on the row is only where they registered.
  */
 class MemberController extends Controller
 {
@@ -24,16 +24,7 @@ class MemberController extends Controller
      */
     public function index(Request $request)
     {
-        $storeId = $this->resolveStoreIdFromRequest($request);
-
         $q = Member::query();
-
-        if ($storeId !== null) {
-            $q->where('store_location_id', Member::ownerStoreId($storeId));
-        } else {
-            // HQ admin with no branch filter: limit to groups they may see.
-            $this->scopeQueryToAllowedStores($q, $request->user());
-        }
 
         $q->search($request->input('search'));
 
@@ -57,16 +48,9 @@ class MemberController extends Controller
      */
     public function lookup(Request $request)
     {
-        $storeId = $this->resolveStoreIdFromRequest($request);
-        if ($storeId === null) {
-            return response()->json(['data' => []]);
-        }
-
         $term = trim((string) $request->input('search', ''));
 
-        $q = Member::query()
-            ->where('store_location_id', Member::ownerStoreId($storeId))
-            ->where('is_active', true);
+        $q = Member::query()->where('is_active', true);
 
         // Empty search returns the most recent customers, which is what a
         // cashier usually wants (regulars) instead of an empty list.
@@ -92,20 +76,13 @@ class MemberController extends Controller
     /** GET /api/members/next-code?store_location_id= */
     public function nextCode(Request $request)
     {
-        $storeId = $this->resolveStoreIdFromRequest($request);
-        if ($storeId === null) {
-            abort(422, 'Store wajib dipilih.');
-        }
-
         return response()->json([
-            'code' => Member::nextCode(Member::ownerStoreId($storeId)),
+            'code' => Member::nextCode(),
         ]);
     }
 
     public function show(Request $request, Member $member)
     {
-        $this->authorizeStoreAccess($request->user(), (int) $member->store_location_id);
-
         return response()->json([
             'data' => $member->load([
                 'storeLocation:id,code,name',
@@ -127,12 +104,11 @@ class MemberController extends Controller
             abort(422, 'Store wajib dipilih.');
         }
 
-        $ownerId = Member::ownerStoreId($storeId);
-        $data = $this->validatePayload($request, $ownerId);
+        $data = $this->validatePayload($request);
 
         $member = Member::create([
-            'store_location_id' => $ownerId,
-            'code'              => $data['code'] ?? Member::nextCode($ownerId),
+            'store_location_id' => $storeId,
+            'code'              => $data['code'] ?? Member::nextCode(),
             'name'              => trim($data['name']),
             'phone'             => $this->normalizePhone($data['phone'] ?? null),
             'email'             => $data['email'] ?? null,
@@ -162,9 +138,7 @@ class MemberController extends Controller
      */
     public function update(Request $request, Member $member)
     {
-        $this->authorizeStoreAccess($request->user(), (int) $member->store_location_id);
-
-        $data = $this->validatePayload($request, (int) $member->store_location_id, $member->id, false);
+        $data = $this->validatePayload($request, $member->id, false);
 
         foreach (['name', 'email', 'birth_date', 'address', 'note', 'code'] as $field) {
             if (array_key_exists($field, $data)) {
@@ -192,8 +166,6 @@ class MemberController extends Controller
      */
     public function destroy(Request $request, Member $member)
     {
-        $this->authorizeStoreAccess($request->user(), (int) $member->store_location_id);
-
         if ($member->sales()->exists()) {
             abort(422, 'Member sudah punya transaksi. Non-aktifkan saja, jangan dihapus.');
         }
@@ -209,8 +181,6 @@ class MemberController extends Controller
      */
     public function adjustPoints(Request $request, Member $member)
     {
-        $this->authorizeStoreAccess($request->user(), (int) $member->store_location_id);
-
         $data = $request->validate([
             'points' => ['required', 'integer', 'not_in:0'],
             'note'   => ['nullable', 'string', 'max:255'],
@@ -233,8 +203,6 @@ class MemberController extends Controller
     /** GET /api/members/{member}/points */
     public function pointHistory(Request $request, Member $member)
     {
-        $this->authorizeStoreAccess($request->user(), (int) $member->store_location_id);
-
         $items = $member->pointTransactions()
             ->with('sale:id,code,created_at', 'user:id,name')
             ->paginate((int) $request->input('per_page', 25));
@@ -276,25 +244,20 @@ class MemberController extends Controller
 
     /* ===================== helpers ===================== */
 
-    protected function validatePayload(Request $request, int $ownerStoreId, ?int $ignoreId = null, bool $creating = true): array
+    protected function validatePayload(Request $request, ?int $ignoreId = null, bool $creating = true): array
     {
         $req = $creating ? 'required' : 'sometimes';
 
         return $request->validate([
             'name'  => [$req, 'string', 'max:120'],
 
-            // Unique per store group, not globally.
             'code'  => [
                 'nullable', 'string', 'max:40',
-                Rule::unique('members', 'code')
-                    ->where('store_location_id', $ownerStoreId)
-                    ->ignore($ignoreId),
+                Rule::unique('members', 'code')->ignore($ignoreId),
             ],
             'phone' => [
                 'nullable', 'string', 'max:30',
-                Rule::unique('members', 'phone')
-                    ->where('store_location_id', $ownerStoreId)
-                    ->ignore($ignoreId),
+                Rule::unique('members', 'phone')->ignore($ignoreId),
             ],
 
             'email'      => ['nullable', 'email', 'max:120'],
