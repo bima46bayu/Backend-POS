@@ -9,21 +9,25 @@ use App\Models\Unit;
 use App\Support\StockLedgerWriter as Ledger;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 use RuntimeException;
 
 /**
  * Records waste / spoiled / expired stock removals.
  *
+ * Rows saved together share a `batch_uid` so one "Catat Waste" reads as a single
+ * document with many product lines.
+ *
  * Flow:
- *  1. createDraft — save editable row, stock untouched
- *  2. updateDraft — change qty/reason/product while still draft
- *  3. submit — consume FIFO layers, lock the row
- *  4. deleteDraft — remove an unsubmitted draft
+ *  1. createDraft / createBatch — save editable rows, stock untouched
+ *  2. updateDraft / updateBatch — change qty/reason/product while still draft
+ *  3. submit / submitBatch — consume FIFO layers, lock the rows
+ *  4. deleteDraft / deleteBatch — remove unsubmitted drafts
  */
 class StockWriteOffService
 {
     /**
-     * @param array{product_id:int,qty:float,reason:string,store_location_id:int,user_id?:int|null,note?:string|null,qty_unit_id?:int|null} $p
+     * @param array{product_id:int,qty:float,reason:string,store_location_id:int,user_id?:int|null,note?:string|null,qty_unit_id?:int|null,batch_uid?:string|null} $p
      */
     public function createDraft(array $p): StockWriteOff
     {
@@ -31,6 +35,7 @@ class StockWriteOffService
 
         return StockWriteOff::create([
             'store_location_id' => $storeId,
+            'batch_uid' => $p['batch_uid'] ?? $this->newBatchUid(),
             'product_id' => (int) $product->id,
             'user_id' => $userId,
             'register_session_id' => $this->openRegisterSessionId($storeId, $userId),
@@ -160,6 +165,169 @@ class StockWriteOffService
             throw new RuntimeException('Write-off sudah di-submit, tidak bisa dihapus.');
         }
         $writeOff->delete();
+    }
+
+    /**
+     * One document, many product lines.
+     *
+     * @param  array<int, array{product_id:int,qty:float,reason:string,note?:string|null,qty_unit_id?:int|null}>  $items
+     * @return array<int, StockWriteOff>
+     */
+    public function createBatch(array $items, int $storeId, ?int $userId = null): array
+    {
+        if ($items === []) {
+            throw new RuntimeException('Minimal satu baris write-off.');
+        }
+
+        $uid = $this->newBatchUid();
+
+        return DB::transaction(function () use ($items, $storeId, $userId, $uid) {
+            $rows = [];
+            foreach ($items as $item) {
+                $rows[] = $this->createDraft([
+                    'product_id' => (int) $item['product_id'],
+                    'qty' => (float) $item['qty'],
+                    'qty_unit_id' => $item['qty_unit_id'] ?? null,
+                    'reason' => $item['reason'],
+                    'store_location_id' => $storeId,
+                    'user_id' => $userId,
+                    'note' => $item['note'] ?? null,
+                    'batch_uid' => $uid,
+                ]);
+            }
+
+            return $rows;
+        });
+    }
+
+    /**
+     * Replaces the lines of a draft document: rows with an id are updated,
+     * rows without are added, and rows left out are removed.
+     *
+     * @param  array<int, array{id?:int|null,product_id:int,qty:float,reason:string,note?:string|null,qty_unit_id?:int|null}>  $items
+     * @return array<int, StockWriteOff>
+     */
+    public function updateBatch(string $batchUid, array $items, ?int $userId = null): array
+    {
+        if ($items === []) {
+            throw new RuntimeException('Minimal satu baris write-off.');
+        }
+
+        return DB::transaction(function () use ($batchUid, $items, $userId) {
+            $existing = StockWriteOff::query()
+                ->where('batch_uid', $batchUid)
+                ->lockForUpdate()
+                ->get();
+
+            if ($existing->isEmpty()) {
+                throw new RuntimeException('Write-off tidak ditemukan.');
+            }
+            if ($existing->contains(fn (StockWriteOff $row) => ! $row->isDraft())) {
+                throw new RuntimeException('Write-off sudah di-submit, tidak bisa diubah.');
+            }
+
+            $storeId = (int) $existing->first()->store_location_id;
+            $ownerId = $existing->first()->user_id ?? $userId;
+            $keptIds = [];
+
+            foreach ($items as $item) {
+                $id = isset($item['id']) ? (int) $item['id'] : 0;
+                $row = $id > 0 ? $existing->firstWhere('id', $id) : null;
+
+                $payload = [
+                    'product_id' => (int) $item['product_id'],
+                    'qty' => (float) $item['qty'],
+                    'qty_unit_id' => $item['qty_unit_id'] ?? null,
+                    'reason' => $item['reason'],
+                    'note' => $item['note'] ?? null,
+                ];
+
+                if ($row) {
+                    $this->updateDraft($row, $payload);
+                    $keptIds[] = (int) $row->id;
+                    continue;
+                }
+
+                $created = $this->createDraft($payload + [
+                    'store_location_id' => $storeId,
+                    'user_id' => $ownerId,
+                    'batch_uid' => $batchUid,
+                ]);
+                $keptIds[] = (int) $created->id;
+            }
+
+            StockWriteOff::query()
+                ->where('batch_uid', $batchUid)
+                ->whereNotIn('id', $keptIds)
+                ->delete();
+
+            return $this->batchRows($batchUid);
+        });
+    }
+
+    /**
+     * @return array<int, StockWriteOff>
+     */
+    public function submitBatch(string $batchUid, ?int $userId = null): array
+    {
+        return DB::transaction(function () use ($batchUid, $userId) {
+            $rows = StockWriteOff::query()
+                ->where('batch_uid', $batchUid)
+                ->orderBy('id')
+                ->get();
+
+            if ($rows->isEmpty()) {
+                throw new RuntimeException('Write-off tidak ditemukan.');
+            }
+
+            $drafts = $rows->filter(fn (StockWriteOff $row) => $row->isDraft());
+            if ($drafts->isEmpty()) {
+                throw new RuntimeException('Write-off sudah di-submit.');
+            }
+
+            foreach ($drafts as $row) {
+                $this->submit($row, $userId);
+            }
+
+            return $this->batchRows($batchUid);
+        });
+    }
+
+    public function deleteBatch(string $batchUid): void
+    {
+        DB::transaction(function () use ($batchUid) {
+            $rows = StockWriteOff::query()
+                ->where('batch_uid', $batchUid)
+                ->lockForUpdate()
+                ->get();
+
+            if ($rows->isEmpty()) {
+                throw new RuntimeException('Write-off tidak ditemukan.');
+            }
+            if ($rows->contains(fn (StockWriteOff $row) => ! $row->isDraft())) {
+                throw new RuntimeException('Write-off sudah di-submit, tidak bisa dihapus.');
+            }
+
+            StockWriteOff::query()->where('batch_uid', $batchUid)->delete();
+        });
+    }
+
+    /**
+     * @return array<int, StockWriteOff>
+     */
+    protected function batchRows(string $batchUid): array
+    {
+        return StockWriteOff::query()
+            ->where('batch_uid', $batchUid)
+            ->with(['product:id,sku,name,unit_id', 'product.unit:id,name', 'qtyUnit:id,name', 'user:id,name'])
+            ->orderBy('id')
+            ->get()
+            ->all();
+    }
+
+    protected function newBatchUid(): string
+    {
+        return (string) Str::uuid();
     }
 
     /**

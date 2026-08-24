@@ -31,6 +31,7 @@ class StockWriteOff extends Model
 
     protected $fillable = [
         'store_location_id',
+        'batch_uid',
         'product_id',
         'user_id',
         'register_session_id',
