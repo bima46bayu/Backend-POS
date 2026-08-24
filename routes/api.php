@@ -198,9 +198,15 @@ Route::middleware(['auth:sanctum', 'principal.staff', 'daily.session'])->group(f
     /*
     | Stock write-offs (waste / spoiled / expired) — consumes FIFO layers
     */
+    Route::get('units', [UnitController::class, 'index']);
+
     Route::prefix('stock-write-offs')->group(function () {
         Route::get('/reasons', [StockWriteOffController::class, 'reasons']);
         Route::get('/summary', [StockWriteOffController::class, 'summary']);
+        Route::get('/batches', [StockWriteOffController::class, 'batches']);
+        Route::put('/batches/{batch_uid}', [StockWriteOffController::class, 'updateBatch']);
+        Route::post('/batches/{batch_uid}/submit', [StockWriteOffController::class, 'submitBatch']);
+        Route::delete('/batches/{batch_uid}', [StockWriteOffController::class, 'destroyBatch']);
         Route::get('/', [StockWriteOffController::class, 'index']);
         Route::post('/', [StockWriteOffController::class, 'store']);
         Route::put('/{stock_write_off}', [StockWriteOffController::class, 'update'])
@@ -306,6 +312,7 @@ Route::middleware(['auth:sanctum', 'principal.staff', 'daily.session'])->group(f
             Route::get('/{purchase}', [PurchaseController::class, 'show'])->whereNumber('purchase');
             Route::post('/', [PurchaseController::class, 'store']);
             Route::get('/{purchase}/for-receipt', [PurchaseReceiveController::class, 'forReceipt'])->whereNumber('purchase');
+            Route::post('/{purchase}/receive', [PurchaseReceiveController::class, 'receive'])->whereNumber('purchase');
         });
 
         Route::prefix('receipts')->group(function () {
@@ -324,7 +331,6 @@ Route::middleware(['auth:sanctum', 'principal.staff', 'daily.session'])->group(f
         Route::prefix('purchases')->group(function () {
             Route::post('/{purchase}/approve', [PurchaseController::class, 'approve'])->whereNumber('purchase');
             Route::post('/{purchase}/cancel', [PurchaseController::class, 'cancel'])->whereNumber('purchase');
-            Route::post('/{purchase}/receive', [PurchaseReceiveController::class, 'receive'])->whereNumber('purchase');
         });
 
         Route::prefix('categories')->group(function () {
@@ -380,7 +386,7 @@ Route::middleware(['auth:sanctum', 'principal.staff', 'daily.session'])->group(f
             Route::delete('/{id}', [StockReconciliationController::class, 'destroy']);
         });
 
-        Route::apiResource('units', UnitController::class)->only(['index', 'store', 'update', 'destroy']);
+        Route::apiResource('units', UnitController::class)->only(['store', 'update', 'destroy']);
 
         Route::post('product-recipes', [ProductRecipeController::class, 'store']);
         Route::get('product-recipes/{product_recipe}', [ProductRecipeController::class, 'show']);

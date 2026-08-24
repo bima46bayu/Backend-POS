@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Product;
 use App\Models\RegisterSession;
 use App\Models\RegisterSessionCart;
 use App\Models\Sale;
@@ -9,6 +10,8 @@ use App\Models\StockWriteOff;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class RegisterSessionController extends Controller
 {
@@ -120,6 +123,7 @@ class RegisterSessionController extends Controller
             'totals'     => $totals,
             'sales'      => $summary['sales'],
             'sold_items' => $summary['sold_items'],
+            'ingredient_usage' => $summary['ingredient_usage'],
         ]);
     }
 
@@ -221,6 +225,7 @@ class RegisterSessionController extends Controller
             'totals'     => $summary['totals'],
             'sales'      => $summary['sales'],
             'sold_items' => $summary['sold_items'],
+            'ingredient_usage' => $summary['ingredient_usage'],
         ]);
     }
 
@@ -332,6 +337,7 @@ class RegisterSessionController extends Controller
             ->all();
 
         $writeOffs = $this->buildWriteOffSummary($storeId, $session->opened_at, $closingAt);
+        $ingredients = $this->buildIngredientUsage($completedSales->pluck('id')->all());
 
         return [
             'header' => [
@@ -355,11 +361,103 @@ class RegisterSessionController extends Controller
                 'void_amount'           => $voidAmount,
                 'write_off_qty'        => $writeOffs['total_qty'],
                 'write_off_cost'       => $writeOffs['total_cost'],
+                'ingredient_cost'      => $ingredients['total_cost'],
             ],
             'sales' => $salesRows,
             'sold_items' => $soldItems,
             'write_offs' => $writeOffs['items'],
             'write_off_totals' => $writeOffs['by_reason'],
+            'ingredient_usage' => $ingredients['items'],
+        ];
+    }
+
+    /**
+     * Recipe ingredients consumed by this session's completed sales.
+     *
+     * Read from inventory_consumptions rather than recomputed from recipes, so
+     * option deltas ("no ice") and voided sales are already accounted for. A
+     * consumption whose product differs from the sold product is by definition
+     * an ingredient pulled through a recipe.
+     *
+     * @param  array<int, int>  $saleIds
+     * @return array{items: array, total_cost: float}
+     */
+    protected function buildIngredientUsage(array $saleIds): array
+    {
+        $empty = ['items' => [], 'total_cost' => 0.0];
+
+        if ($saleIds === []
+            || ! Schema::hasTable('inventory_consumptions')
+            || ! Schema::hasColumn('inventory_consumptions', 'sale_item_id')) {
+            return $empty;
+        }
+
+        $query = DB::table('inventory_consumptions as ic')
+            ->join('sale_items as si', 'si.id', '=', 'ic.sale_item_id')
+            ->whereIn('ic.sale_id', $saleIds)
+            ->whereColumn('ic.product_id', '!=', 'si.product_id');
+
+        if (Schema::hasColumn('inventory_consumptions', 'reversed_at')) {
+            $query->whereNull('ic.reversed_at');
+        }
+
+        $rows = $query
+            ->selectRaw('ic.product_id AS ingredient_id, si.product_id AS finished_id, SUM(ic.qty) AS qty, SUM(ic.qty * ic.unit_cost) AS cost')
+            ->groupBy('ic.product_id', 'si.product_id')
+            ->get();
+
+        if ($rows->isEmpty()) {
+            return $empty;
+        }
+
+        $productIds = $rows->pluck('ingredient_id')
+            ->merge($rows->pluck('finished_id'))
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->all();
+
+        // Deleted ingredients still need a name on an old session's summary.
+        $products = Product::withTrashed()
+            ->with('unit:id,name')
+            ->whereIn('id', $productIds)
+            ->get(['id', 'sku', 'name', 'unit_id'])
+            ->keyBy('id');
+
+        $items = [];
+        foreach ($rows as $row) {
+            $ingredientId = (int) $row->ingredient_id;
+            $ingredient = $products->get($ingredientId);
+
+            if (! isset($items[$ingredientId])) {
+                $items[$ingredientId] = [
+                    'product_id' => $ingredientId,
+                    'product_name' => $ingredient->name ?? ('#' . $ingredientId),
+                    'product_sku' => $ingredient->sku ?? null,
+                    'unit' => optional($ingredient?->unit)->name,
+                    'qty' => 0.0,
+                    'cost' => 0.0,
+                    'used_by' => [],
+                ];
+            }
+
+            $qty = round((float) $row->qty, 4);
+            $items[$ingredientId]['qty'] = round($items[$ingredientId]['qty'] + $qty, 4);
+            $items[$ingredientId]['cost'] = round($items[$ingredientId]['cost'] + (float) $row->cost, 2);
+            $items[$ingredientId]['used_by'][] = [
+                'product_id' => (int) $row->finished_id,
+                'product_name' => $products->get((int) $row->finished_id)->name ?? ('#' . (int) $row->finished_id),
+                'qty' => $qty,
+            ];
+        }
+
+        $items = collect($items)
+            ->sortBy('product_name', SORT_NATURAL | SORT_FLAG_CASE)
+            ->values()
+            ->all();
+
+        return [
+            'items' => $items,
+            'total_cost' => round(array_sum(array_column($items, 'cost')), 2),
         ];
     }
 
