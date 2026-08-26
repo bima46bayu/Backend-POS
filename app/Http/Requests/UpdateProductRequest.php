@@ -65,21 +65,47 @@ class UpdateProductRequest extends FormRequest
                 ? (float) str_replace(',', '.', $this->input('price'))
                 : null,
 
-            'cost_price'      => $this->input('cost_price') !== null && $this->input('cost_price') !== ''
-                ? (float) str_replace(',', '.', $this->input('cost_price'))
-                : null,
-
-            // pack_size <= 1 is a no-op divisor; normalise it away so nothing
-            // downstream has to special-case it.
-            'pack_size'       => $this->input('pack_size') !== null && $this->input('pack_size') !== ''
-                ? ((float) str_replace(',', '.', $this->input('pack_size')) > 1
-                    ? (float) str_replace(',', '.', $this->input('pack_size'))
-                    : null)
-                : null,
-
             'stock'           => $this->input('stock') !== null && $this->input('stock') !== ''
                 ? (int) $this->input('stock')
                 : null,
         ]);
+
+        /*
+         | Cost and pack info are merged ONLY when the client actually sent them.
+         |
+         | Merging unconditionally injects a null for every client that does not
+         | know these fields, and validated() then feeds that null into fill() —
+         | which is how editing a product from a form without a cost input erased
+         | cost_price and pack_size. A packed ingredient losing pack_size also
+         | breaks its recipe: the per-piece conversion has no ratio left and the
+         | sale 422s. Absent key now means "leave as is"; an explicit "" still
+         | clears the value.
+         */
+        if ($this->has('cost_price')) {
+            $this->merge([
+                'cost_price' => $this->input('cost_price') !== null && $this->input('cost_price') !== ''
+                    ? (float) str_replace(',', '.', $this->input('cost_price'))
+                    : null,
+            ]);
+        }
+
+        if ($this->has('pack_size')) {
+            // pack_size <= 1 is a no-op divisor; normalise it away so nothing
+            // downstream has to special-case it.
+            $packSize = $this->input('pack_size') !== null && $this->input('pack_size') !== ''
+                ? (float) str_replace(',', '.', $this->input('pack_size'))
+                : null;
+
+            if ($packSize !== null && $packSize <= 1) {
+                $packSize = null;
+            }
+
+            $this->merge(['pack_size' => $packSize]);
+
+            // A label without a size describes nothing, so drop it together.
+            if ($packSize === null) {
+                $this->merge(['pack_label' => null]);
+            }
+        }
     }
 }
