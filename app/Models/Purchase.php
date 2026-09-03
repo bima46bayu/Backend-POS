@@ -43,6 +43,11 @@ class Purchase extends Model
         return $this->hasMany(PurchaseItem::class);
     }
 
+    public function activeItems()
+    {
+        return $this->items()->active();
+    }
+
     public function supplier()
     {
         return $this->belongsTo(Supplier::class);
@@ -62,6 +67,11 @@ class Purchase extends Model
     {
         // pastikan nama model & table StoreLocation sudah ada
         return $this->belongsTo(StoreLocation::class, 'store_location_id');
+    }
+
+    public function goodsReceipts()
+    {
+        return $this->hasMany(GoodsReceipt::class);
     }
 
     // ===== Nomor PO Otomatis =====

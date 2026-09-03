@@ -17,6 +17,8 @@ return Application::configure(basePath: dirname(__DIR__))
         // CORS global
         $middleware->append(HandleCors::class);
 
+        $middleware->appendToGroup('api', \App\Http\Middleware\LogActivity::class);
+
         $middleware->alias([
             'role' => \App\Http\Middleware\RoleMiddleware::class, // <<< PAKAI INI
             // kalau sebelumnya kamu isi Spatie\Permission\Middleware\RoleMiddleware, HAPUS / GANTI

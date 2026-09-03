@@ -439,12 +439,7 @@ class StockWriteOffService
         $taken = [];
 
         while ($need > $eps) {
-            $layer = DB::table('inventory_layers')
-                ->where('product_id', $productId)
-                ->where('store_location_id', $storeId)
-                ->where('qty_remaining', '>', 0)
-                ->orderBy('created_at')
-                ->orderBy('id')
+            $layer = InventoryService::fifoEligibleQuery($productId, $storeId)
                 ->lockForUpdate()
                 ->first();
 
@@ -469,10 +464,7 @@ class StockWriteOffService
                 ]);
             }
 
-            DB::table('inventory_layers')->where('id', $layer->id)->update([
-                'qty_remaining' => DB::raw('qty_remaining - ' . (float) $take),
-                'updated_at' => now(),
-            ]);
+            InventoryService::decrementLayerQty($layer, $take);
 
             Ledger::write([
                 'product_id' => $productId,

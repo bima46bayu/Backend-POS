@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\MemberProfileResource;
 use App\Models\Member;
 use App\Models\MemberAccount;
+use App\Services\ActivityLogger;
 use App\Services\MemberOtpService;
 use App\Services\PhoneNormalizer;
 use Illuminate\Http\Request;
@@ -81,6 +82,8 @@ class AuthController extends Controller
             return MemberAccount::create(['member_id' => $member->id, 'phone' => $phone, 'password' => $data['password'], 'phone_verified_at' => now()]);
         });
 
+        ActivityLogger::forActor($request, $account->load('member'), 'POST', '/v1/member/auth/verify', 201);
+
         return $this->tokenResponse($account, 201);
     }
 
@@ -92,6 +95,8 @@ class AuthController extends Controller
         $account = MemberAccount::where('phone', $phone)->where('is_active', true)->firstOrFail();
         $account->update(['password' => $data['password']]);
         $account->tokens()->delete();
+
+        ActivityLogger::forActor($request, $account->loadMissing('member'), 'POST', '/v1/member/auth/password/reset', 200);
 
         return $this->tokenResponse($account);
     }
@@ -108,6 +113,8 @@ class AuthController extends Controller
         }
         $account->tokens()->delete();
         $account->update(['last_login_at' => now()]);
+
+        ActivityLogger::forActor($request, $account->loadMissing('member'), 'POST', '/v1/member/auth/login', 200);
 
         return $this->tokenResponse($account);
     }

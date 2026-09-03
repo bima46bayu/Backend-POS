@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use App\Models\User;
+use App\Services\ActivityLogger;
 
 class AuthController extends Controller
 {
@@ -49,6 +50,8 @@ class AuthController extends Controller
         $user->tokens()->delete();
 
         $token = $user->createToken('pos-token', ['staff'])->plainTextToken;
+
+        ActivityLogger::forActor($request, $user, 'POST', '/login', 200);
 
         return response()->json([
             'user'  => $this->formatUser($user),

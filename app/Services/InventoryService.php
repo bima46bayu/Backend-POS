@@ -23,6 +23,11 @@ class InventoryService
         if ($storeId !== null) {
             $q->where('store_location_id', $storeId);
         }
+        if (Schema::hasColumn('inventory_layers', 'status')) {
+            $q->where(function ($w) {
+                $w->whereNull('status')->orWhere('status', '!=', 'reversed');
+            });
+        }
 
         return (float) $q->sum('qty_remaining');
     }
@@ -167,6 +172,8 @@ class InventoryService
                 'unit_landed_cost'  => $landed,
                 'unit_cost'         => $landed,
                 'estimated_cost'    => $landed * $qty,
+                'status'            => 'open',
+                'qty_reversed'      => 0,
                 'note'              => $note,
             ];
             foreach ($optional as $col => $value) {
@@ -262,12 +269,7 @@ class InventoryService
 
         $taken = [];
         while ($need > $eps) {
-            $layer = DB::table('inventory_layers')
-                ->where('product_id', $productId)
-                ->where('store_location_id', $storeId)
-                ->where('qty_remaining', '>', 0)
-                ->orderBy('created_at')
-                ->orderBy('id')
+            $layer = self::fifoEligibleQuery($productId, $storeId)
                 ->lockForUpdate()
                 ->first();
 
@@ -289,10 +291,7 @@ class InventoryService
                 'updated_at'        => now(),
             ]);
 
-            DB::table('inventory_layers')->where('id', $layer->id)->update([
-                'qty_remaining' => DB::raw('qty_remaining - '.(float) $take),
-                'updated_at'    => now(),
-            ]);
+            self::decrementLayerQty($layer, $take);
 
             $taken[] = [
                 'layer_id'        => $layer->id,
@@ -311,5 +310,68 @@ class InventoryService
         }
 
         return $taken;
+    }
+
+    /**
+     * Open FIFO layers only — reversed layers stay in the ledger but are never
+     * drawn from, even if qty_remaining was restored by a later void.
+     */
+    public static function fifoEligibleQuery(int $productId, int $storeId)
+    {
+        $q = DB::table('inventory_layers')
+            ->where('product_id', $productId)
+            ->where('store_location_id', $storeId)
+            ->where('qty_remaining', '>', 0)
+            ->orderBy('created_at')
+            ->orderBy('id');
+
+        if (Schema::hasColumn('inventory_layers', 'status')) {
+            $q->where(function ($w) {
+                $w->whereNull('status')->orWhere('status', 'open');
+            });
+        }
+
+        return $q;
+    }
+
+    public static function decrementLayerQty(object $layer, float $take): float
+    {
+        $newRemaining = max(0, (float) $layer->qty_remaining - $take);
+        $update = [
+            'qty_remaining' => $newRemaining,
+            'updated_at'    => now(),
+        ];
+
+        if (Schema::hasColumn('inventory_layers', 'status')) {
+            $current = (string) ($layer->status ?? 'open');
+            if ($current !== 'reversed') {
+                $update['status'] = $newRemaining <= 1e-9 ? 'closed' : 'open';
+            }
+        }
+
+        DB::table('inventory_layers')->where('id', $layer->id)->update($update);
+
+        return $newRemaining;
+    }
+
+    public static function restoreLayerQty(object $layer, float $qty, float $cap): float
+    {
+        $newRemaining = min($cap, (float) ($layer->qty_remaining ?? 0) + $qty);
+        $update = [
+            'qty_remaining' => $newRemaining,
+            'updated_at'    => now(),
+        ];
+
+        if (Schema::hasColumn('inventory_layers', 'status')) {
+            if ($newRemaining > 1e-9) {
+                $update['status'] = 'open';
+            } elseif (($layer->status ?? '') !== 'reversed') {
+                $update['status'] = 'closed';
+            }
+        }
+
+        DB::table('inventory_layers')->where('id', $layer->id)->update($update);
+
+        return $newRemaining;
     }
 }

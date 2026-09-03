@@ -8,9 +8,29 @@ use App\Models\Purchase;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class GoodsReceipt extends Model {
-  protected $fillable = ['gr_number','purchase_id','received_by','received_date','status','notes'];
+  protected $fillable = [
+    'gr_number','purchase_id','received_by','received_date','status','notes',
+    'reversed_at','review_flagged_at','review_flagged_by','review_reason',
+  ];
+
+  protected $casts = [
+    'received_date' => 'date',
+    'reversed_at' => 'datetime',
+    'review_flagged_at' => 'datetime',
+  ];
+
+  public function toArray()
+  {
+    $arr = parent::toArray();
+    if ($this->reversed_at) {
+      $arr['status'] = 'reversed';
+    }
+    $arr['review_flagged'] = $this->review_flagged_at !== null;
+    return $arr;
+  }
   public function items(){ return $this->hasMany(GoodsReceiptItem::class); }
   public function purchase(){ return $this->belongsTo(Purchase::class); }
+  public function reviewFlaggedBy(){ return $this->belongsTo(User::class, 'review_flagged_by'); }
 
   public static function nextNumber(): string {
     $prefix = 'GR-'.now()->format('Ym').'-';

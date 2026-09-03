@@ -3,10 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Http\Requests\StorePurchaseRequest;
-use App\Http\Requests\PurchaseReceiveRequest; // kalau kamu pakai ini di tempat lain
+use App\Http\Requests\UpdatePurchaseRequest;
 use App\Models\{Purchase, PurchaseItem, Product};
+use App\Services\GrPoLifecycleService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 
 class PurchaseController extends Controller
@@ -46,8 +48,38 @@ class PurchaseController extends Controller
             ->selectSub(
                 DB::table('purchase_items')
                     ->selectRaw('COALESCE(SUM(qty_order),0)')
-                    ->whereColumn('purchase_items.purchase_id', 'purchases.id'),
+                    ->whereColumn('purchase_items.purchase_id', 'purchases.id')
+                    ->when(
+                        Schema::hasColumn('purchase_items', 'status'),
+                        fn ($qq) => $qq->where(function ($w) {
+                            $w->whereNull('status')->orWhereNotIn('status', ['cancelled', 'canceled']);
+                        })
+                    ),
                 'qty_total'
+            )
+            ->when(
+                Schema::hasTable('goods_receipts') && Schema::hasColumn('goods_receipts', 'reversed_at'),
+                function ($qq) {
+                    $qq->selectSub(
+                        DB::table('goods_receipts')
+                            ->selectRaw('COUNT(*)')
+                            ->whereColumn('goods_receipts.purchase_id', 'purchases.id')
+                            ->whereNotNull('reversed_at'),
+                        'reversed_gr_count'
+                    );
+                }
+            )
+            ->when(
+                Schema::hasTable('cost_adjustments'),
+                function ($qq) {
+                    $qq->selectSub(
+                        DB::table('cost_adjustments')
+                            ->join('goods_receipts', 'goods_receipts.id', '=', 'cost_adjustments.goods_receipt_id')
+                            ->selectRaw('COUNT(*)')
+                            ->whereColumn('goods_receipts.purchase_id', 'purchases.id'),
+                        'cost_adjustment_count'
+                    );
+                }
             )
             ->when($r->status, function ($qq, $v) {
                 $qq->where('purchases.status', $v);
@@ -92,12 +124,32 @@ class PurchaseController extends Controller
 
     public function show(Purchase $purchase)
     {
-        return $purchase->load([
+        $purchase->load([
             'supplier:id,name',
             'storeLocation:id,name',
             'items.product:id,sku,name,unit_id',
             'items.product.unit:id,name',
         ]);
+
+        $lifecycle = app(GrPoLifecycleService::class);
+        $state = $lifecycle->priceEditState($purchase);
+        $story = $lifecycle->purchaseStory($purchase);
+        $purchase->setAttribute('price_editable', $state['editable']);
+        $purchase->setAttribute('price_edit_lock', $state);
+        $purchase->setAttribute('receipt_story', $story);
+
+        $itemStory = collect($story['items'] ?? [])->keyBy('purchase_item_id');
+        foreach ($purchase->items as $item) {
+            $stats = $itemStory->get($item->id);
+            if (is_array($stats)) {
+                $item->setAttribute('qty_reversed', $stats['qty_reversed'] ?? 0);
+                $item->setAttribute('adjusted_unit_cost', $stats['adjusted_unit_cost'] ?? null);
+                $item->setAttribute('cogs_delta', $stats['cogs_delta'] ?? 0);
+            }
+            $item->setAttribute('delete_lock', $lifecycle->inspectPurchaseItem($item, $purchase));
+        }
+
+        return $purchase;
     }
 
     public function store(StorePurchaseRequest $req)
@@ -193,12 +245,30 @@ class PurchaseController extends Controller
         return response()->json($po, 201);
     }
 
+    public function update(UpdatePurchaseRequest $req, Purchase $purchase)
+    {
+        $storeId = $purchase->store_location_id ? (int) $purchase->store_location_id : null;
+        $this->authorizeStoreAccess($req->user(), $storeId);
+
+        $po = app(GrPoLifecycleService::class)->updatePurchasePrices(
+            $purchase,
+            $req->validated(),
+            $req->user()
+        );
+
+        $state = app(GrPoLifecycleService::class)->priceEditState($po);
+        $po->setAttribute('price_editable', $state['editable']);
+        $po->setAttribute('price_edit_lock', $state);
+
+        return response()->json($po);
+    }
+
     public function approve(Request $r, Purchase $purchase)
     {
         if ($purchase->status !== 'draft') {
             return response()->json(['message' => 'Only draft can be approved'], 422);
         }
-        if (!$purchase->items()->exists()) {
+        if (!$purchase->activeItems()->exists()) {
             return response()->json(['message' => 'No items to approve'], 422);
         }
 
@@ -223,6 +293,41 @@ class PurchaseController extends Controller
         $purchase->update(['status' => 'canceled']);
 
         return response()->json(['message' => 'Purchase canceled']);
+    }
+
+    public function destroyItem(Request $r, Purchase $purchase, PurchaseItem $item)
+    {
+        $storeId = $purchase->store_location_id ? (int) $purchase->store_location_id : null;
+        $this->authorizeStoreAccess($r->user(), $storeId);
+
+        if ((int) $item->purchase_id !== (int) $purchase->id) {
+            abort(404);
+        }
+
+        $result = app(GrPoLifecycleService::class)->cancelPurchaseItem(
+            $purchase,
+            $item,
+            $r->user()
+        );
+
+        $po = $result['purchase'];
+        $state = app(GrPoLifecycleService::class)->priceEditState($po);
+        $story = app(GrPoLifecycleService::class)->purchaseStory($po);
+        $po->setAttribute('price_editable', $state['editable']);
+        $po->setAttribute('price_edit_lock', $state);
+        $po->setAttribute('receipt_story', $story);
+        foreach ($po->items as $row) {
+            $row->setAttribute(
+                'delete_lock',
+                app(GrPoLifecycleService::class)->inspectPurchaseItem($row, $po)
+            );
+        }
+
+        return response()->json([
+            'message' => $result['message'],
+            'purchase' => $po,
+            'item' => $result['item'],
+        ]);
     }
 
     public function batch(Request $r)
