@@ -352,10 +352,10 @@ class InventoryController extends Controller
 
             // === NORMALISASI DIRECTION ===
             $dir = match ($ref) {
-                'SALE'      => -1,
-                'DESTROY'   => -1,
+                'SALE', 'DESTROY', 'GR_REVERSAL' => -1,
                 'SALE_VOID' => +1,   // force masuk
                 'GR', 'ADD' => +1,
+                'COST_ADJUSTMENT' => 0, // value-only; does not move on-hand qty
                 default     => (int)($row->direction ?? 1),
             };
 
@@ -378,8 +378,9 @@ class InventoryController extends Controller
 
             // Profitability hanya untuk SALE keluar (bukan SALE_VOID)
             $isSale = ($ref === 'SALE' && $dir === -1);
+            $isAdj  = ($ref === 'COST_ADJUSTMENT');
             $row->line_revenue = $isSale ? ($qty * $unitPrice) : 0.0;
-            $row->line_cogs    = $isSale ? ($qty * $unitCost)  : 0.0;
+            $row->line_cogs    = $isSale ? ($qty * $unitCost) : ($isAdj ? $subtotalCost : 0.0);
             $row->line_gross   = $row->line_revenue - $row->line_cogs;
 
             if ($hideCost) {
@@ -530,6 +531,15 @@ class InventoryController extends Controller
     $cogs = (float)(clone $saleQuery)
         ->selectRaw('SUM(COALESCE(sl.subtotal_cost, sl.qty * sl.unit_cost))')
         ->value('SUM(COALESCE(sl.subtotal_cost, sl.qty * sl.unit_cost))');
+
+    if (Schema::hasTable('cost_adjustments')) {
+        $cogs += (float) DB::table('cost_adjustments')
+            ->where('product_id', $productId)
+            ->when($storeId !== null, fn ($q) => $q->where('store_location_id', $storeId))
+            ->when($r->filled('date_from'), fn ($q) => $q->where('created_at', '>=', $r->input('date_from').' 00:00:00'))
+            ->when($r->filled('date_to'), fn ($q) => $q->where('created_at', '<=', $r->input('date_to').' 23:59:59'))
+            ->sum('cogs_delta');
+    }
 
     $grossProfit = $grossRevenue - $cogs;
 

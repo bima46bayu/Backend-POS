@@ -22,7 +22,7 @@ class PurchaseReceiveController extends Controller
             return response()->json(['message'=>'PO must be approved'],422);
         }
 
-        $items = $purchase->items()->with([
+        $items = $purchase->activeItems()->with([
             'product:id,sku,name,image_url,unit_id,pack_size,pack_label',
             'product.unit:id,name',
         ])->get()->map(function ($pi) {
@@ -92,6 +92,12 @@ class PurchaseReceiveController extends Controller
                     ]);
                 }
 
+                if ($pi->isCancelled()) {
+                    throw ValidationException::withMessages([
+                        'items' => "Purchase item {$pi->id} sudah dibatalkan.",
+                    ]);
+                }
+
                 $product = $productMap[$pi->product_id] ?? null;
                 if (!$product) {
                     throw ValidationException::withMessages([
@@ -157,6 +163,7 @@ class PurchaseReceiveController extends Controller
             }
 
             $stillOpen = PurchaseItem::where('purchase_id',$purchase->id)
+                          ->active()
                           ->whereColumn('qty_received','<','qty_order')->exists();
 
             $purchase->update(['status'=>$stillOpen ? 'partially_received' : 'closed']);

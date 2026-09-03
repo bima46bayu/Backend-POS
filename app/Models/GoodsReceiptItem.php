@@ -8,7 +8,12 @@ use App\Models\PurchaseItem;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class GoodsReceiptItem extends Model {
-  protected $fillable = ['goods_receipt_id','purchase_item_id','qty_received','condition_notes'];
+  protected $fillable = ['goods_receipt_id','purchase_item_id','qty_received','qty_reversed','condition_notes'];
+
+  protected $casts = [
+    'qty_received' => 'float',
+    'qty_reversed' => 'float',
+  ];
   public function goodsReceipt(){ return $this->belongsTo(GoodsReceipt::class); }
   public function purchaseItem(){ return $this->belongsTo(PurchaseItem::class); }
 }

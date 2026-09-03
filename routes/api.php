@@ -35,6 +35,7 @@ use App\Http\Controllers\SubCategoryController;
 use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\UnitController;
 use App\Http\Controllers\UserController;
+use App\Http\Controllers\ActivityLogController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -130,6 +131,8 @@ Route::middleware(['auth:sanctum', 'principal.staff', 'daily.session'])->group(f
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/me', [AuthController::class, 'me']);
     Route::put('/me/store', [AuthController::class, 'updateStore']);
+
+    Route::middleware('role:admin')->get('/activity-logs', [ActivityLogController::class, 'index']);
 
     /*
     | Store Locations
@@ -311,6 +314,7 @@ Route::middleware(['auth:sanctum', 'principal.staff', 'daily.session'])->group(f
             Route::get('/', [PurchaseController::class, 'index']);
             Route::get('/{purchase}', [PurchaseController::class, 'show'])->whereNumber('purchase');
             Route::post('/', [PurchaseController::class, 'store']);
+            Route::put('/{purchase}', [PurchaseController::class, 'update'])->whereNumber('purchase');
             Route::get('/{purchase}/for-receipt', [PurchaseReceiveController::class, 'forReceipt'])->whereNumber('purchase');
             Route::post('/{purchase}/receive', [PurchaseReceiveController::class, 'receive'])->whereNumber('purchase');
         });
@@ -331,6 +335,16 @@ Route::middleware(['auth:sanctum', 'principal.staff', 'daily.session'])->group(f
         Route::prefix('purchases')->group(function () {
             Route::post('/{purchase}/approve', [PurchaseController::class, 'approve'])->whereNumber('purchase');
             Route::post('/{purchase}/cancel', [PurchaseController::class, 'cancel'])->whereNumber('purchase');
+            Route::delete('/{purchase}/items/{item}', [PurchaseController::class, 'destroyItem'])
+                ->whereNumber('purchase')
+                ->whereNumber('item');
+        });
+
+        Route::prefix('receipts')->group(function () {
+            Route::post('/{goodsReceipt}/void', [GoodsReceiptController::class, 'void'])->whereNumber('goodsReceipt');
+            Route::post('/{goodsReceipt}/cost-adjustments', [GoodsReceiptController::class, 'costAdjust'])->whereNumber('goodsReceipt');
+            Route::post('/{goodsReceipt}/review', [GoodsReceiptController::class, 'flagReview'])->whereNumber('goodsReceipt');
+            Route::post('/{goodsReceipt}/review/resolve', [GoodsReceiptController::class, 'resolveReview'])->whereNumber('goodsReceipt');
         });
 
         Route::prefix('categories')->group(function () {

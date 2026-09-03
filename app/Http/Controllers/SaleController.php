@@ -780,13 +780,7 @@ class SaleController extends Controller
                         $originalQty = (float)$layer->qty_remaining + (float)$row->qty;
                     }
 
-                    $qtyRemaining = (float)($layer->qty_remaining ?? 0);
-                    $newRemaining = min($originalQty, $qtyRemaining + (float)$row->qty);
-
-                    DB::table('inventory_layers')->where('id', $layer->id)->update([
-                        'qty_remaining' => $newRemaining,
-                        'updated_at'    => now(),
-                    ]);
+                    \App\Services\InventoryService::restoreLayerQty($layer, (float) $row->qty, $originalQty);
 
                     // 3) Ledger kompensasi (IN) untuk void (append-only)
                     if (Schema::hasTable('stock_ledger')) {
