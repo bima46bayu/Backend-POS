@@ -49,10 +49,13 @@ class GoodsReceiptController extends Controller
     {
         $this->authorizeGr($r, $goodsReceipt);
         $goodsReceipt->load([
-            'purchase:id,purchase_number,supplier_id,store_location_id',
-            'purchase.supplier:id,name',
+            'purchase:id,purchase_number,supplier_id,store_location_id,order_date',
+            'purchase.supplier',
+            'purchase.storeLocation:id,code,name,address,phone,logo_url',
+            'receivedBy:id,name',
             'items.purchaseItem:id,purchase_id,product_id,qty_order,qty_received,unit_price',
-            'items.purchaseItem.product:id,sku,name',
+            'items.purchaseItem.product:id,sku,name,unit_id',
+            'items.purchaseItem.product.unit:id,name',
         ]);
 
         $lifecycle = app(GrPoLifecycleService::class)->inspect($goodsReceipt);

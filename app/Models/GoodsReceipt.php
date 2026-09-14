@@ -30,6 +30,7 @@ class GoodsReceipt extends Model {
   }
   public function items(){ return $this->hasMany(GoodsReceiptItem::class); }
   public function purchase(){ return $this->belongsTo(Purchase::class); }
+  public function receivedBy(){ return $this->belongsTo(User::class, 'received_by'); }
   public function reviewFlaggedBy(){ return $this->belongsTo(User::class, 'review_flagged_by'); }
 
   public static function nextNumber(): string {
