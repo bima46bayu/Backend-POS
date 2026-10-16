@@ -44,6 +44,12 @@ class PurchaseController extends Controller
                 'supplier:id,name',
                 'user:id,name,store_location_id',
             ])
+            ->when($r->boolean('with_items'), function ($qq) {
+                $qq->with([
+                    'items.product:id,sku,name,unit_id',
+                    'items.product.unit:id,name',
+                ]);
+            })
             ->withCount('items')
             ->selectSub(
                 DB::table('purchase_items')
@@ -98,6 +104,10 @@ class PurchaseController extends Controller
                     $sub->where('purchases.purchase_number', 'like', "%{$search}%")
                         ->orWhereHas('supplier', function ($qs) use ($search) {
                             $qs->where('name', 'like', "%{$search}%");
+                        })
+                        ->orWhereHas('items.product', function ($qp) use ($search) {
+                            $qp->where('name', 'like', "%{$search}%")
+                                ->orWhere('sku', 'like', "%{$search}%");
                         });
                 });
             })

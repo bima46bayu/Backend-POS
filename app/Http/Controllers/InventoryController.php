@@ -267,6 +267,7 @@ class InventoryController extends Controller
             'products.id',
             'products.sku',
             'products.name',
+            'products.image_url',
             'products.price',
             // Cost/pack basis, so inventory valuation screens can show what stock
             // is actually worth instead of only what it sells for.
@@ -295,7 +296,15 @@ class InventoryController extends Controller
                         ->orWhere('products.sku', 'like', "%{$s}%");
                 });
             })
-            ->orderByDesc('products.updated_at');
+        ;
+
+        $sort = (string) $r->input('sort', 'name');
+        $dir = strtolower((string) $r->input('dir', 'asc')) === 'desc' ? 'desc' : 'asc';
+        $allowed = ['name', 'sku', 'price', 'stock', 'updated_at'];
+        if (! in_array($sort, $allowed, true)) {
+            $sort = 'name';
+        }
+        $q->orderBy($sort === 'stock' ? 'stock' : 'products.'.$sort, $dir);
 
         $p = $q->paginate(min(max((int) $r->input('per_page', 20), 1), 100))->appends($r->query());
 
