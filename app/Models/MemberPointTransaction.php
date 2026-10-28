@@ -63,4 +63,9 @@ class MemberPointTransaction extends Model
     {
         return $this->belongsTo(User::class);
     }
+
+    public function storeLocation()
+    {
+        return $this->belongsTo(StoreLocation::class);
+    }
 }

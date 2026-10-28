@@ -1,18 +1,21 @@
 <?php
 
+use App\Http\Controllers\ActivityLogController;
 use App\Http\Controllers\AdditionalChargeController;
+use App\Http\Controllers\Api\V1 as ApiV1;
 use App\Http\Controllers\AppSettingController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\BankAccountController;
 use App\Http\Controllers\CategoryController;
+use App\Http\Controllers\CogsReportController;
 use App\Http\Controllers\CoaController;
 use App\Http\Controllers\DiscountController;
 use App\Http\Controllers\GoodsReceiptController;
+use App\Http\Controllers\HomePromoController;
 use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\LoyaltyRewardController;
 use App\Http\Controllers\Member;
 use App\Http\Controllers\MemberController;
-use App\Http\Controllers\Staff;
 use App\Http\Controllers\PayeeController;
 use App\Http\Controllers\PaymentRequestBalanceController;
 use App\Http\Controllers\PaymentRequestController;
@@ -26,6 +29,7 @@ use App\Http\Controllers\PurchaseReceiveController;
 use App\Http\Controllers\RegisterSessionController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\SaleController;
+use App\Http\Controllers\Staff;
 use App\Http\Controllers\StockController;
 use App\Http\Controllers\StockLogController;
 use App\Http\Controllers\StockReconciliationController;
@@ -35,7 +39,6 @@ use App\Http\Controllers\SubCategoryController;
 use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\UnitController;
 use App\Http\Controllers\UserController;
-use App\Http\Controllers\ActivityLogController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -86,6 +89,39 @@ Route::prefix('v1/member')->group(function () {
         Route::post('/card/qr', [Member\CardController::class, 'qr']);
     });
 });
+
+/*
+|--------------------------------------------------------------------------
+| Member app API v1 (POS-BSG-Customer). Contract: ARCHITECTURE.md "API
+| Endpoints (v1)". Every member-scoped route reads the member from the
+| Sanctum principal; ids are never accepted from the client.
+|--------------------------------------------------------------------------
+*/
+Route::prefix('v1')->group(function () {
+    Route::post('/auth/register', [ApiV1\AuthController::class, 'register'])->middleware('throttle:5,1');
+    Route::post('/auth/login', [ApiV1\AuthController::class, 'login'])->middleware('throttle:10,1');
+
+    Route::middleware(['auth:sanctum', 'principal.member'])->group(function () {
+        Route::post('/auth/logout', [ApiV1\AuthController::class, 'logout']);
+
+        Route::get('/me', [ApiV1\MeController::class, 'show']);
+        Route::get('/me/card', [ApiV1\MeController::class, 'card']);
+        Route::get('/me/perks', [ApiV1\MeController::class, 'perks']);
+
+        Route::get('/promotions', [ApiV1\PromotionController::class, 'index']);
+        Route::post('/promotions/{promotion}/dismiss', [ApiV1\PromotionController::class, 'dismiss'])->whereNumber('promotion');
+
+        Route::get('/rewards', [ApiV1\RewardController::class, 'index']);
+        Route::get('/rewards/categories', [ApiV1\RewardController::class, 'categories']);
+        Route::post('/rewards/{reward}/redeem', [ApiV1\RewardController::class, 'redeem'])
+            ->whereNumber('reward')
+            ->middleware('throttle:10,1');
+
+        Route::get('/transactions', [ApiV1\TransactionController::class, 'index']);
+        Route::get('/seasons/current/summary', [ApiV1\SeasonController::class, 'currentSummary']);
+    });
+});
+
 /*
  | Reachability probe for the mobile POS offline mode.
  | Intentionally public and DB-free: the client only needs to know whether the
@@ -179,6 +215,8 @@ Route::middleware(['auth:sanctum', 'principal.staff', 'daily.session'])->group(f
         Route::get('/{subCategory}', [SubCategoryController::class, 'show'])->whereNumber('subCategory');
     });
     Route::get('/reports/subcategory-month', [SubCategoryController::class, 'reportMonthly']);
+    Route::get('/reports/cogs-per-sku', [CogsReportController::class, 'perSku'])
+        ->middleware('role:admin|regional_manager|store_admin');
 
     /*
     | Products
@@ -406,6 +444,14 @@ Route::middleware(['auth:sanctum', 'principal.staff', 'daily.session'])->group(f
         Route::get('product-recipes/{product_recipe}', [ProductRecipeController::class, 'show']);
         Route::put('product-recipes/{product_recipe}', [ProductRecipeController::class, 'update']);
         Route::delete('product-recipes/{product_recipe}', [ProductRecipeController::class, 'destroy']);
+
+        // Home ads for the member app (promotions table).
+        Route::prefix('promotions')->group(function () {
+            Route::get('/', [HomePromoController::class, 'index']);
+            Route::post('/', [HomePromoController::class, 'store']);
+            Route::put('/{promotion}', [HomePromoController::class, 'update'])->whereNumber('promotion');
+            Route::delete('/{promotion}', [HomePromoController::class, 'destroy'])->whereNumber('promotion');
+        });
 
         Route::prefix('discounts')->group(function () {
             Route::post('/', [DiscountController::class, 'store']);

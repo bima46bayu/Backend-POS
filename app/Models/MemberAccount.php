@@ -9,7 +9,7 @@ class MemberAccount extends Authenticatable
 {
     use HasApiTokens;
 
-    protected $fillable = ['member_id', 'phone', 'password', 'phone_verified_at', 'last_login_at', 'is_active'];
+    protected $fillable = ['member_id', 'phone', 'email', 'password', 'phone_verified_at', 'last_login_at', 'is_active'];
 
     protected $hidden = ['password', 'remember_token'];
 
