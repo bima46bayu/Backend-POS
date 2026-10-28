@@ -369,4 +369,70 @@ class RecipeService
 
         return $out;
     }
+
+    /**
+     * Standard cost of one finished unit, using the same unit conversion as a sale.
+     *
+     * Each ingredient line is converted into that ingredient's stock unit, then
+     * priced at products.cost_price (already per stock unit). A recipe of 1 Pcs
+     * against a Pack of 100 at Rp 5.000 therefore costs Rp 50, not Rp 5.000.
+     *
+     * @return array{
+     *     unit_cogs: float,
+     *     missing_cost: bool,
+     *     ingredients: list<array<string, mixed>>
+     * }
+     */
+    public function standardUnitCogs(ProductRecipe $recipe): array
+    {
+        $ingredients = [];
+        $total = 0.0;
+        $missing = false;
+
+        foreach ($recipe->items as $line) {
+            $ingredient = $line->ingredient;
+            if (! $ingredient) {
+                $missing = true;
+                continue;
+            }
+
+            $unitCost = $ingredient->costBasis();
+            $lineMissing = $ingredient->cost_price === null;
+            if ($lineMissing) {
+                $missing = true;
+            }
+
+            try {
+                $qtyStock = $this->lineQtyInStockUnit($line);
+                $error = null;
+            } catch (\Throwable $e) {
+                $qtyStock = 0.0;
+                $error = $e->getMessage();
+                $missing = true;
+            }
+
+            $lineCost = $qtyStock * $unitCost;
+            $total += $lineCost;
+
+            $ingredients[] = [
+                'product_id'   => (int) $ingredient->id,
+                'sku'          => $ingredient->sku,
+                'name'         => $ingredient->name,
+                'qty'          => round((float) $line->qty, 4),
+                'unit_name'    => $line->unit?->name ?? $ingredient->unit?->name,
+                'qty_stock'    => round($qtyStock, 6),
+                'stock_unit'   => $ingredient->unit?->name,
+                'unit_cost'    => round($unitCost, 2),
+                'line_cost'    => round($lineCost, 2),
+                'missing_cost' => $lineMissing,
+                'error'        => $error,
+            ];
+        }
+
+        return [
+            'unit_cogs'    => round($total, 2),
+            'missing_cost' => $missing,
+            'ingredients'  => $ingredients,
+        ];
+    }
 }

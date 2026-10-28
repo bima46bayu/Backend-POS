@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class LoyaltyTierPerk extends Model
 {
-    protected $fillable = ['loyalty_tier_id', 'title', 'description', 'sort_order'];
+    protected $fillable = ['loyalty_tier_id', 'title', 'description', 'icon', 'sort_order'];
 
     public function tier()
     {
