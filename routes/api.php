@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\ActivityLogController;
+use App\Http\Controllers\AppServerController;
 use App\Http\Controllers\AdditionalChargeController;
 use App\Http\Controllers\Api\V1 as ApiV1;
 use App\Http\Controllers\AppSettingController;
@@ -131,6 +132,10 @@ Route::get('/ping', fn () => response()->json([
     'ok' => true,
     'time' => now()->toIso8601String(),
 ]));
+
+// Mobile login reads this before a token exists. Writes stay behind admin auth.
+Route::get('/app-servers', [AppServerController::class, 'index'])
+    ->middleware('throttle:60,1');
 
 Route::prefix('store-locations')->group(function () {
     Route::get('/{id}/logo', [StoreLocationController::class, 'logo'])->whereNumber('id');
@@ -513,6 +518,13 @@ Route::middleware(['auth:sanctum', 'principal.staff', 'daily.session'])->group(f
             Route::post('/{id}/balances', [PaymentRequestBalanceController::class, 'store']);
             Route::put('/{id}/balances/{balance}', [PaymentRequestBalanceController::class, 'update']);
             Route::delete('/{id}/balances/{balance}', [PaymentRequestBalanceController::class, 'destroy']);
+        });
+
+        Route::prefix('app-servers')->group(function () {
+            Route::get('/manage', [AppServerController::class, 'manage']);
+            Route::post('/', [AppServerController::class, 'store']);
+            Route::put('/{id}', [AppServerController::class, 'update'])->whereNumber('id');
+            Route::delete('/{id}', [AppServerController::class, 'destroy'])->whereNumber('id');
         });
 
         Route::prefix('settings')->group(function () {
