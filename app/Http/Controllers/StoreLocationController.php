@@ -4,7 +4,9 @@ namespace App\Http\Controllers;
 
 use App\Models\StoreLocation;
 use App\Models\User;
+use App\Services\StoreLocationPurger;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Log;
 
@@ -92,23 +94,28 @@ class StoreLocationController extends Controller
     public function destroy(Request $request, $id)
     {
         $store = StoreLocation::findOrFail($id);
-        $this->authorizeStoreAccess($request->user(), (int) $store->id);
+        $user = $request->user();
+        $this->authorizeStoreAccess($user, (int) $store->id);
 
-        if ($user = $request->user()) {
-            if ($user->isRegionalManager() && $store->isRoot()) {
-                return response()->json(['message' => 'Regional manager cannot delete region root store'], 422);
-            }
+        $data = $request->validate([
+            'password' => ['required', 'string'],
+        ], [
+            'password.required' => 'Password wajib diisi.',
+        ]);
+
+        if (! Hash::check($data['password'], $user->password)) {
+            return response()->json(['message' => 'Password salah.'], 422);
         }
 
-        if (method_exists($store, 'users') && $store->users()->exists()) {
-            return response()->json(['message' => 'Tidak bisa menghapus: masih dipakai user'], 422);
+        if ($user->isRegionalManager() && $store->isRoot()) {
+            return response()->json(['message' => 'Regional manager cannot delete region root store'], 422);
         }
 
         if ($store->children()->exists()) {
             return response()->json(['message' => 'Tidak bisa menghapus: masih punya cabang'], 422);
         }
 
-        $store->delete();
+        app(StoreLocationPurger::class)->purge($store);
 
         return response()->json(['message' => 'Deleted']);
     }
